@@ -28,7 +28,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
           X_API_BEARER_TOKEN: ${{ secrets.X_API_BEARER_TOKEN }}
-          NOTIFICATION_DRIVER: ${{ secrets.NOTIFICATION_DRIVER || 'notion' }}
+          NOTIFICATION_DRIVER: "notion"
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
