@@ -14,7 +14,7 @@ export async function generateDraft(rawStories: string) {
 
   try {
     const currentDate = new Date().toLocaleDateString();
-    const header = `🚀 AI and LLM Trends on X for ${currentDate}\n\n`;
+    const header = `🚀 AI 및 LLM 트렌드 (${currentDate})\n\n`;
 
     // Instantiate the OpenAI client using your OPENAI_API_KEY
     const openai = new OpenAI({
@@ -28,7 +28,12 @@ export async function generateDraft(rawStories: string) {
         content:
           "You are a helpful assistant that creates a concise, bullet-pointed draft post based on input stories and tweets. " +
           "Return strictly valid JSON that has a key 'interestingTweetsOrStories' containing an array of items. " +
-          "Each item should have a 'description' and a 'story_or_tweet_link' key.",
+          "Each item should have: " +
+          "1. 'description' (English original description), " +
+          "2. 'description_ko' (Korean translation of the description), " +
+          "3. 'title_ko' (Korean translation of the title if it exists), " +
+          "4. 'story_or_tweet_link' (link to the source). " +
+          "Make sure to translate all content into natural, fluent Korean.",
       },
       {
         role: "user",
@@ -47,7 +52,7 @@ export async function generateDraft(rawStories: string) {
     const rawJSON = completion.choices[0].message.content;
     if (!rawJSON) {
       console.log("No JSON output returned from OpenAI.");
-      return header + "No output.";
+      return header + "출력 결과가 없습니다.";
     }
     console.log(rawJSON);
 
@@ -57,7 +62,7 @@ export async function generateDraft(rawStories: string) {
     const contentArray =
       parsedResponse.interestingTweetsOrStories || parsedResponse.stories || [];
     if (contentArray.length === 0) {
-      return header + "No trending stories or tweets found at this time.";
+      return header + "현재 트렌딩 중인 이야기나 트윗이 발견되지 않았습니다.";
     }
 
     // Build the draft post using the content array
@@ -65,16 +70,18 @@ export async function generateDraft(rawStories: string) {
       header +
       contentArray
         .map(
-          (item: any) =>
-            `• ${item.description || item.headline}\n  ${
+          (item: any) => {
+            const titleKo = item.title_ko ? `📌 ${item.title_ko}\n` : '';
+            return `• ${item.description_ko || item.description}\n${titleKo}  원문: ${item.description || item.headline}\n  ${
               item.story_or_tweet_link || item.link
-            }`,
+            }`;
+          }
         )
         .join("\n\n");
 
     return draft_post;
   } catch (error) {
     console.error("Error generating draft post", error);
-    return "Error generating draft post.";
+    return "드래프트 포스트 생성 중 오류가 발생했습니다.";
   }
 }
