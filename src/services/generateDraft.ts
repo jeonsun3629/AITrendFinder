@@ -70,18 +70,16 @@ export async function generateDraft(rawStories: string) {
       header +
       contentArray
         .map(
-          (item: any) => {
-            const titleKo = item.title_ko ? `📌 ${item.title_ko}\n` : '';
-            return `• ${item.description_ko || item.description}\n${titleKo}  원문: ${item.description || item.headline}\n  ${
+          (item: any) =>
+            `• ${item.description || item.headline}\n  ${
               item.story_or_tweet_link || item.link
-            }`;
-          }
+            }`,
         )
         .join("\n\n");
 
     return draft_post;
   } catch (error) {
     console.error("Error generating draft post", error);
-    return "드래프트 포스트 생성 중 오류가 발생했습니다.";
+    return "Error generating draft post.";
   }
 }
