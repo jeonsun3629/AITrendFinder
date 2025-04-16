@@ -41,12 +41,16 @@ export async function scrapeSources(
   const tweetStartTime = new Date(
     Date.now() - 24 * 60 * 60 * 1000,
   ).toISOString();
+  
+  console.log(`총 ${sources.length}개의 소스를 처리합니다.`);
 
   for (const sourceObj of sources) {
     const source = sourceObj.identifier;
+    console.log(`처리 중인 소스: ${source}`);
 
     // --- 1) Handle Twitter/X sources ---
     if (source.includes("x.com")) {
+      console.log(`X/트위터 소스 감지: ${source}`);
       if (useTwitter) {
         const usernameMatch = source.match(/x\.com\/([^\/]+)/);
         if (!usernameMatch) continue;
@@ -59,6 +63,7 @@ export async function scrapeSources(
         const apiUrl = `https://api.x.com/2/tweets/search/recent?query=${encodedQuery}&max_results=10&start_time=${encodedStartTime}`;
 
         try {
+          console.log(`X API 호출 중: ${username}`);
           const response = await fetch(apiUrl, {
             headers: {
               Authorization: `Bearer ${process.env.X_API_BEARER_TOKEN}`,
@@ -94,6 +99,7 @@ export async function scrapeSources(
     // --- 2) Handle all other sources with Firecrawl ---
     else {
       if (useScrape) {
+        console.log(`Firecrawl로 크롤링 중: ${source}`);
         const currentDate = new Date().toLocaleDateString();
         const promptForFirecrawl = `
 Return only today's AI or LLM related story or post headlines and links in JSON format from the page content. 
@@ -103,7 +109,7 @@ They must be posted today, ${currentDate}. The format should be:
     {
       "headline": "headline1",
       "link": "link1",
-      "date_posted": "YYYY-MM-DD"
+      "date_posted": "YYYY-MM-DD" 
     },
     ...
   ]
@@ -111,10 +117,11 @@ They must be posted today, ${currentDate}. The format should be:
 If there are no AI or LLM stories from today, return {"stories": []}.
 
 The source link is ${source}. 
-If a story link is not absolute, prepend ${source} to make it absolute. 
+If a story link is not absolute, prepend ${source} to make it absolute.
 Return only pure JSON in the specified format (no extra text, no markdown, no \`\`\`).
         `;
         try {
+          console.log(`Firecrawl 추출 시작: ${source}`);
           const scrapeResult = await app.extract([source], {
             prompt: promptForFirecrawl,
             schema: StoriesSchema,
