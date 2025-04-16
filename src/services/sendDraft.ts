@@ -135,16 +135,16 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
               start: new Date().toISOString().split('T')[0],
             },
           },
-          Content: {
+          Content_kr: {
             rich_text: [
               {
                 text: {
-                  content: item.translated || item.original,
+                  content: item.translated || '',
                 }
               }
             ]
           },
-          "원문": {
+          Content_og: {
             rich_text: [
               {
                 text: {
