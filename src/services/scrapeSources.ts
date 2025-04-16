@@ -101,24 +101,24 @@ export async function scrapeSources(
       if (useScrape) {
         const currentDate = new Date().toLocaleDateString();
         const promptForFirecrawl = `
-Return only today's AI or LLM related story or post headlines and links in JSON format from the page content. 
-They must be posted today, ${currentDate}. The format should be:
-{
-  "stories": [
-    {
-      "headline": "headline1",
-      "link": "link1",
-      "date_posted": "YYYY-MM-DD" 
-    },
-    ...
-  ]
-}
-If there are no AI or LLM stories from today, return {"stories": []}.
+          Return only today's AI or LLM related story or post headlines and links in JSON format from the page content. 
+          They must be posted today, ${currentDate}. The format should be:
+          {
+            "stories": [
+              {
+                "headline": "headline1",
+                "link": "link1",
+                "date_posted": "YYYY-MM-DD" 
+              },
+              ...
+            ]
+          }
+          If there are no AI or LLM stories from today, return {"stories": []}.
 
-The source link is ${source}. 
-If a story link is not absolute, prepend ${source} to make it absolute. 
-Return only pure JSON in the specified format (no extra text, no markdown, no \`\`\`).
-        `;
+          The source link is ${source}. 
+          If a story link is not absolute, prepend ${source} to make it absolute. 
+          Return only pure JSON in the specified format (no extra text, no markdown, no \`\`\`).
+          `;
         try {
           const scrapeResult = await app.extract([source], {
             prompt: promptForFirecrawl,
