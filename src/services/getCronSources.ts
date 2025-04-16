@@ -12,20 +12,28 @@ export async function getCronSources(): Promise<{ identifier: string }[]> {
 
     // Define sources based on available API keys
     const sources: { identifier: string }[] = [
-      ...(hasFirecrawlKey
-        ? [
-            { identifier: "https://www.firecrawl.dev/blog" },
-            { identifier: "https://openai.com/news/" },
-            { identifier: "https://www.anthropic.com/news" },
-            { identifier: "https://news.ycombinator.com/" },
-            {
-              identifier:
-                "https://www.reuters.com/technology/artificial-intelligence/",
-            },
-            { identifier: "https://simonwillison.net/" },
-            { identifier: "https://buttondown.com/ainews/archive/" },
-          ]
-        : []),
+      // 공식 블로그
+      { identifier: "https://deepmind.google/discover/blog/" },
+      { identifier: "https://huggingface.co/blog" },
+      { identifier: "https://ai.meta.com/blog/" },
+      { identifier: "https://openai.com/news/" },
+      { identifier: "https://www.anthropic.com/news" },
+      { identifier: "https://www.firecrawl.dev/blog" },
+      
+      // 뉴스
+      { identifier: "https://www.nytimes.com/section/technology" },
+      { identifier: "https://www.wsj.com/tech" },
+      {
+        identifier:
+          "https://www.reuters.com/technology/artificial-intelligence/",
+      },
+
+      // 블로그
+      { identifier: "https://news.ycombinator.com/" },
+      { identifier: "https://simonwillison.net/" },
+      { identifier: "https://buttondown.com/ainews/archive/" },
+
+      // 트위터
       ...(hasXApiKey ? [{ identifier: "https://x.com/skirano" }] : []),
     ];
 
