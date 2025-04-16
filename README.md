@@ -45,8 +45,6 @@ Learn how to set up Trend Finder and start monitoring trends in this video!
 
 - Node.js (v14 or higher)
 - npm or yarn
-- Docker
-- Docker Compose
 - Slack workspace with webhook permissions
 - API keys for required services
 
@@ -106,30 +104,6 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/WEBHOOK/URL
 
    # Build for production
    npm run build
-   ```
-
-## Using Docker
-
-1. **Build the Docker image:**
-   ```bash
-   docker build -t trend-finder .
-   ```
-
-2. **Run the Docker container:**
-   ```bash
-   docker run -d -p 3000:3000 --env-file .env trend-finder
-   ```
-
-## Using Docker Compose
-
-1. **Start the application with Docker Compose:**
-   ```bash
-   docker-compose up --build -d
-   ```
-
-2. **Stop the application with Docker Compose:**
-   ```bash
-   docker-compose down
    ```
 
 ## Project Structure

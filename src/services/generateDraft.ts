@@ -71,15 +71,29 @@ export async function generateDraft(rawStories: string) {
       contentArray
         .map(
           (item: any) =>
-            `• ${item.description || item.headline}\n  ${
+            `• ${item.description_ko || item.description || item.headline}\n  ${
               item.story_or_tweet_link || item.link
             }`,
         )
         .join("\n\n");
 
-    return draft_post;
+    // Store the original and translated content for Notion
+    const translatedContent = contentArray.map((item: any) => ({
+      original: item.description || item.headline,
+      translated: item.description_ko || "",
+      title_ko: item.title_ko || "",
+      link: item.story_or_tweet_link || item.link
+    }));
+
+    return { 
+      draft_post, 
+      translatedContent 
+    };
   } catch (error) {
     console.error("Error generating draft post", error);
-    return "Error generating draft post.";
+    return { 
+      draft_post: "Error generating draft post.",
+      translatedContent: []
+    };
   }
 }

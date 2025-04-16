@@ -1,6 +1,7 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
 import { Client } from '@notionhq/client';
+import { BlockObjectRequest } from '@notionhq/client/build/src/api-endpoints';
 
 dotenv.config();
 
@@ -53,26 +54,67 @@ async function sendDraftToSlack(draft_post: string) {
   }
 }
 
-async function sendDraftToNotion(draft_post: string) {
+async function sendDraftToNotion(draft: { draft_post: string, translatedContent: any[] }) {
   try {
     // 스토리를 파싱하여 각 항목을 분리
-    const titleMatch = draft_post.match(/🚀 AI and LLM Trends on X for (.*?)\n\n/);
+    const titleMatch = draft.draft_post.match(/🚀 AI 및 LLM 트렌드 \((.*?)\)\n\n/);
     const title = titleMatch ? titleMatch[1] : new Date().toLocaleDateString();
     
-    // 글머리 기호로 분리된 항목들 추출
-    const items = draft_post
-      .split('\n\n')
-      .slice(1) // 제목 이후의 항목들만 사용
-      .map(item => {
-        const lines = item.split('\n');
-        const description = lines[0].replace('• ', '');
-        const link = lines[1] ? lines[1].trim() : '';
-        return { description, link };
+    // 번역된 콘텐츠 항목들 사용
+    for (const item of draft.translatedContent) {
+      if (!item.translated && !item.original) continue;
+      
+      const blocks: BlockObjectRequest[] = [
+        {
+          object: "block",
+          type: "paragraph",
+          paragraph: {
+            rich_text: [
+              {
+                type: "text",
+                text: { 
+                  content: item.translated || item.original,
+                },
+              }
+            ],
+          }
+        }
+      ];
+      
+      // 원문이 있고 번역도 있는 경우 원문도 추가
+      if (item.original && item.translated) {
+        blocks.push({
+          object: "block",
+          type: "paragraph",
+          paragraph: {
+            rich_text: [
+              {
+                type: "text",
+                text: { 
+                  content: '원문: ' + item.original,
+                },
+              }
+            ],
+          }
+        });
+      }
+      
+      // 링크 추가
+      blocks.push({
+        object: "block",
+        type: "paragraph",
+        paragraph: {
+          rich_text: [
+            {
+              type: "text",
+              text: { 
+                content: item.link || '',
+                link: item.link ? { url: item.link } : null
+              },
+            }
+          ],
+        }
       });
-
-    // 각 트렌드 항목마다 별도의 Notion 페이지 생성
-    for (const item of items) {
-      if (!item.description) continue;
       
       await notion.pages.create({
         parent: {
@@ -83,7 +125,7 @@ async function sendDraftToNotion(draft_post: string) {
             title: [
               {
                 text: {
-                  content: item.description,
+                  content: item.title_ko || item.translated || item.original,
                 },
               },
             ],
@@ -97,7 +139,16 @@ async function sendDraftToNotion(draft_post: string) {
             rich_text: [
               {
                 text: {
-                  content: item.description,
+                  content: item.translated || item.original,
+                }
+              }
+            ]
+          },
+          "원문": {
+            rich_text: [
+              {
+                text: {
+                  content: item.original || '',
                 }
               }
             ]
@@ -106,41 +157,11 @@ async function sendDraftToNotion(draft_post: string) {
             url: item.link || null,
           }
         },
-        children: [
-          {
-            object: 'block',
-            type: 'paragraph',
-            paragraph: {
-              rich_text: [
-                {
-                  type: 'text',
-                  text: { 
-                    content: item.description,
-                  },
-                }
-              ],
-            }
-          },
-          {
-            object: 'block',
-            type: 'paragraph',
-            paragraph: {
-              rich_text: [
-                {
-                  type: 'text',
-                  text: { 
-                    content: item.link || '',
-                    link: item.link ? { url: item.link } : null
-                  },
-                }
-              ],
-            }
-          }
-        ],
+        children: blocks,
       });
     }
 
-    return `Success sending ${items.length} trends to Notion at ${new Date().toISOString()}`;
+    return `Success sending ${draft.translatedContent.length} trends to Notion at ${new Date().toISOString()}`;
   } catch (error) {
     console.log('Error sending draft to Notion');
     console.error(error);
@@ -148,8 +169,11 @@ async function sendDraftToNotion(draft_post: string) {
   }
 }
 
-export async function sendDraft(draft_post: string) {
+export async function sendDraft(draft: { draft_post: string, translatedContent: any[] } | string) {
   const notificationDriver = process.env.NOTIFICATION_DRIVER?.toLowerCase();
+
+  // 문자열로 들어오는 경우 (이전 코드와의 호환성을 위해)
+  const draft_post = typeof draft === 'string' ? draft : draft.draft_post;
 
   switch (notificationDriver) {
     case 'slack':
@@ -157,7 +181,7 @@ export async function sendDraft(draft_post: string) {
     case 'discord':
       return sendDraftToDiscord(draft_post);
     case 'notion':
-      return sendDraftToNotion(draft_post);
+      return sendDraftToNotion(typeof draft === 'string' ? { draft_post, translatedContent: [] } : draft);
     default:
       throw new Error(`Unsupported notification driver: ${notificationDriver}`);
   }

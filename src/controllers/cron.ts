@@ -8,8 +8,8 @@ export const handleCron = async (): Promise<void> => {
     const cronSources = await getCronSources();
     const rawStories = await scrapeSources(cronSources);
     const rawStoriesString = JSON.stringify(rawStories);
-    const draftPost = await generateDraft(rawStoriesString);
-    const result = await sendDraft(draftPost!);
+    const draftResult = await generateDraft(rawStoriesString);
+    const result = await sendDraft(draftResult!);
     console.log(result);
   } catch (error) {
     console.error(error);
