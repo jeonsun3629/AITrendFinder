@@ -36,7 +36,8 @@ export async function generateDraft(rawStories: string) {
           "1. 'description' - A MINIMUM of 3-4 complete sentences (NOT bullet points) that thoroughly explain the story, its significance, technical details, and broader context. Provide comprehensive information even if the original source is brief.\n" +
           "2. 'description_ko' - A MINIMUM of 3-4 complete sentences in fluent Korean that provide the same comprehensive information.\n" +
           "3. 'title_ko' - A concise but informative Korean title/headline.\n" +
-          "4. 'story_or_tweet_link' - Link to the source.\n\n" +
+          "4. 'story_or_tweet_link' - Link to the source.\n" +
+          "5. 'category' - MUST be ONE of these categories exactly as written: '모델 업데이트', '연구 동향', '시장 동향', '개발자 도구'. Choose the most appropriate category based on the content.\n\n" +
           "IMPORTANT: Both description and description_ko MUST be detailed enough to stand alone as informative summaries. DO NOT provide short, one-sentence summaries. For each item, write AT LEAST 3 substantive sentences that fully explain the content and context. If the original content is brief, use your expert knowledge to expand on its implications and details.",
       },
       {
@@ -107,6 +108,13 @@ export async function generateDraft(rawStories: string) {
         item.title_ko = "AI 기술 발전: " + koreanDesc.substring(0, 20) + "...";
       }
       
+      // 카테고리가 없거나 유효하지 않은 경우 기본값 설정
+      const validCategories = ['모델 업데이트', '연구 동향', '시장 동향', '개발자 도구'];
+      if (!item.category || !validCategories.includes(item.category)) {
+        // 기본적으로 '연구 동향'으로 설정
+        item.category = '연구 동향';
+      }
+      
       return item;
     });
 
@@ -127,7 +135,8 @@ export async function generateDraft(rawStories: string) {
       original: item.description || item.headline,   // content_og에 해당
       translated: item.description_ko || "",         // content_kr에 해당
       title_ko: item.title_ko || "",                 // title에 해당
-      link: item.story_or_tweet_link || item.link    // url에 해당
+      link: item.story_or_tweet_link || item.link,   // url에 해당
+      category: item.category || "연구 동향"          // 카테고리(태그) 정보 추가
     }));
 
     return { 

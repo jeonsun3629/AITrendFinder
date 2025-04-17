@@ -155,6 +155,11 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
           },
           URL: {
             url: item.link || null,
+          },
+          Category: {
+            select: {
+              name: item.category || "연구 동향"
+            }
           }
         },
         children: blocks,
