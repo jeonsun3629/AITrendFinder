@@ -22,7 +22,6 @@ export async function getCronSources(): Promise<{ identifier: string }[]> {
       
       // 뉴스
       { identifier: "https://www.nytimes.com/section/technology" },
-      { identifier: "https://www.wsj.com/tech" },
       {
         identifier:
           "https://www.reuters.com/technology/artificial-intelligence/",
@@ -34,7 +33,7 @@ export async function getCronSources(): Promise<{ identifier: string }[]> {
       { identifier: "https://buttondown.com/ainews/archive/" },
 
       // 트위터
-      ...(hasXApiKey ? [{ identifier: "https://x.com/skirano" }] : []),
+      ...(hasXApiKey ? [{ identifier: "https://x.com/minchoi" }] : []),
     ];
 
     // Return the full objects instead of mapping to strings

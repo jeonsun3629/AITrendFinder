@@ -124,10 +124,10 @@ export async function generateDraft(rawStories: string) {
 
     // Store the original and translated content for Notion
     const translatedContent = processedContent.map((item: any) => ({
-      original: item.description || item.headline,
-      translated: item.description_ko || "",
-      title_ko: item.title_ko || "",
-      link: item.story_or_tweet_link || item.link
+      original: item.description || item.headline,   // content_og에 해당
+      translated: item.description_ko || "",         // content_kr에 해당
+      title_ko: item.title_ko || "",                 // title에 해당
+      link: item.story_or_tweet_link || item.link    // url에 해당
     }));
 
     return { 
