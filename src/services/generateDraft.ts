@@ -22,7 +22,7 @@ export async function generateDraft(rawStories: string) {
     });
 
     // 모델 선택 - gpt-4o 또는 o3 권장, 없으면 기본값 사용
-    const model = process.env.OPENAI_MODEL || "o3";
+    const model = process.env.OPENAI_MODEL || "GPT-4.1 mini";
 
     // Prepare messages with explicit literal types
     const messages: Array<{ role: "system" | "user"; content: string }> = [
