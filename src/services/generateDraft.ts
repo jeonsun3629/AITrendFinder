@@ -26,14 +26,15 @@ export async function generateDraft(rawStories: string) {
       {
         role: "system",
         content:
-          "You are a helpful assistant that creates a concise, bullet-pointed draft post based on input stories and tweets. " +
+          "You are a helpful assistant that creates comprehensive summaries of AI news and technology stories. " +
           "Return strictly valid JSON that has a key 'interestingTweetsOrStories' containing an array of items. " +
           "Each item should have: " +
-          "1. 'description' (English original description), " +
-          "2. 'description_ko' (Korean translation of the description), " +
-          "3. 'title_ko' (Korean translation of the title if it exists), " +
+          "1. 'description' (English original description - provide a detailed 3-4 sentence summary that captures key points, implications, and context), " +
+          "2. 'description_ko' (Korean translation of the description - provide a detailed 3-4 sentence summary in fluent Korean that captures the same information), " +
+          "3. 'title_ko' (A concise but informative Korean title/headline), " +
           "4. 'story_or_tweet_link' (link to the source). " +
-          "Make sure to translate all content into natural, fluent Korean.",
+          "Make sure to translate all content into natural, fluent Korean. " +
+          "Focus on providing enough context and details in both 'description' and 'description_ko' fields to give readers a complete understanding without needing to click the link.",
       },
       {
         role: "user",
