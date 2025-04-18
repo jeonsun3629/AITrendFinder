@@ -21,11 +21,9 @@ export async function getCronSources(): Promise<{ identifier: string }[]> {
       { identifier: "https://www.firecrawl.dev/blog" },
       
       // 뉴스
-      { identifier: "https://www.nytimes.com/section/technology" },
-      {
-        identifier:
-          "https://www.reuters.com/technology/artificial-intelligence/",
-      },
+      { identifier: "https://www.wsj.com/technology" },
+      { identifier: "https://www.reuters.com/technology/artificial-intelligence/" },
+      { identifier: "https://www.bloomberg.com/technology" },
 
       // 블로그
       { identifier: "https://news.ycombinator.com/" },

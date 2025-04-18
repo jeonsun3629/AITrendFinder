@@ -158,7 +158,7 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
           },
           Category: {
             select: {
-              name: item.category || "연구 동향"
+              name: getCategoryFromContent(item.category, item.translated || item.original)
             }
           }
         },
@@ -172,6 +172,60 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
     console.error(error);
     throw error;
   }
+}
+
+/**
+ * 내용을 분석하여 적절한 카테고리를 반환합니다.
+ * @param existingCategory 이미 설정된 카테고리 (있는 경우)
+ * @param content 포스트 내용
+ * @returns 유효한 카테고리 (모델 업데이트, 연구 동향, 시장 동향, 개발자 도구 중 하나)
+ */
+function getCategoryFromContent(existingCategory: string | undefined, content: string): string {
+  // 유효한 카테고리 목록
+  const validCategories = ['모델 업데이트', '연구 동향', '시장 동향', '개발자 도구'];
+  
+  // 이미 유효한 카테고리가 있으면 그대로 사용
+  if (existingCategory && validCategories.includes(existingCategory)) {
+    return existingCategory;
+  }
+  
+  // 내용에 기반한 키워드 분류
+  const contentLower = content.toLowerCase();
+  
+  // 카테고리별 키워드
+  const categoryKeywords = {
+    '모델 업데이트': ['gpt-', 'llama', 'claude', 'gemini', '모델 출시', '업데이트', '버전', '릴리스', '새로운 모델', '모델 개선', 'llm'],
+    '연구 동향': ['논문', '연구', '발표', '학습', '알고리즘', '성능', '향상', '연구팀', '발견', '혁신'],
+    '시장 동향': ['시장', '투자', '인수', '합병', '성장', '전망', '매출', '기업', '수익', '사업', '협력', '파트너십'],
+    '개발자 도구': ['api', '도구', '플랫폼', '개발', '코드', '라이브러리', '프레임워크', 'sdk', '오픈소스', '개발자']
+  };
+  
+  // 각 카테고리별 점수 계산
+  const scores: Record<string, number> = {};
+  
+  for (const [category, keywords] of Object.entries(categoryKeywords)) {
+    scores[category] = 0;
+    for (const keyword of keywords) {
+      const regex = new RegExp(keyword, 'gi');
+      const matches = contentLower.match(regex);
+      if (matches) {
+        scores[category] += matches.length;
+      }
+    }
+  }
+  
+  // 가장 높은 점수의 카테고리 찾기
+  let bestCategory = '연구 동향'; // 기본값
+  let maxScore = 0;
+  
+  for (const [category, score] of Object.entries(scores)) {
+    if (score > maxScore) {
+      maxScore = score;
+      bestCategory = category;
+    }
+  }
+  
+  return bestCategory;
 }
 
 export async function sendDraft(draft: { draft_post: string, translatedContent: any[] } | string) {
