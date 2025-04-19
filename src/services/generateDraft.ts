@@ -37,7 +37,10 @@ export async function generateDraft(rawStories: string) {
           "2. 'description_ko' - A MINIMUM of 3-4 complete sentences in fluent Korean that provide the same comprehensive information.\n" +
           "3. 'title_ko' - A concise but informative Korean title/headline.\n" +
           "4. 'story_or_tweet_link' - Link to the source.\n" +
-          "5. 'category' - MUST be ONE of these categories exactly as written: '모델 업데이트', '연구 동향', '시장 동향', '개발자 도구'. Choose the most appropriate category based on the content.\n\n" +
+          "5. 'category' - MUST be ONE of these categories exactly as written: '모델 업데이트', '연구 동향', '시장 동향', '개발자 도구'. Choose the most appropriate category based on the content.\n" +
+          "6. 'fullContent' - The ENTIRE content of the article if available in the input. If not available, leave this empty.\n" + 
+          "7. 'imageUrls' - An array of image URLs found in the article if any. If no images, provide an empty array.\n" +
+          "8. 'videoUrls' - An array of video URLs found in the article if any. If no videos, provide an empty array.\n\n" +
           "IMPORTANT: Both description and description_ko MUST be detailed enough to stand alone as informative summaries. DO NOT provide short, one-sentence summaries. For each item, write AT LEAST 3 substantive sentences that fully explain the content and context. If the original content is brief, use your expert knowledge to expand on its implications and details.",
       },
       {
@@ -171,7 +174,10 @@ export async function generateDraft(rawStories: string) {
       translated: item.description_ko || "",         // content_kr에 해당
       title_ko: item.title_ko || "",                 // title에 해당
       link: item.story_or_tweet_link || item.link,   // url에 해당
-      category: item.category || "연구 동향"          // 카테고리(태그) 정보 추가
+      category: item.category || "연구 동향",          // 카테고리 정보
+      content_full: item.fullContent || "",          // 새로 추가: 전체 원문
+      image_url: item.imageUrls || [],               // 새로 추가: 이미지 URL 배열
+      video_url: item.videoUrls || []                // 새로 추가: 비디오 URL 배열
     }));
 
     return { 
@@ -219,7 +225,10 @@ function createEmergencyResponse(rawText: string): any {
           description_ko: "OpenAI 응답에서 유효한 JSON을 파싱할 수 없었습니다. API 응답 형식에 문제가 있습니다.",
           title_ko: "JSON 파싱 오류",
           story_or_tweet_link: "https://help.openai.com",
-          category: "개발자 도구"
+          category: "개발자 도구",
+          fullContent: "",
+          imageUrls: [] as string[],
+          videoUrls: [] as string[]
         }
       ]
     };
@@ -230,6 +239,33 @@ function createEmergencyResponse(rawText: string): any {
     const titleKoMatch = /"title_ko"\s*:\s*"(.*?)(?:"|$)/g.exec(rawText);
     const linkMatch = /"story_or_tweet_link"\s*:\s*"(.*?)(?:"|$)/g.exec(rawText);
     const categoryMatch = /"category"\s*:\s*"(.*?)(?:"|$)/g.exec(rawText);
+    const fullContentMatch = /"fullContent"\s*:\s*"(.*?)(?:"|$)/g.exec(rawText);
+    
+    // 이미지 URL 배열 추출 시도
+    let imageUrls: string[] = [];
+    const imageUrlsMatch = /"imageUrls"\s*:\s*\[(.*?)\]/g.exec(rawText);
+    if (imageUrlsMatch && imageUrlsMatch[1]) {
+      // 배열 내용을 추출해서 분리
+      const urlsString = imageUrlsMatch[1];
+      // 따옴표로 둘러싸인 URL 추출
+      const urlMatches = urlsString.match(/"(https?:\/\/[^"]+)"/g);
+      if (urlMatches) {
+        imageUrls = urlMatches.map(url => url.replace(/"/g, ''));
+      }
+    }
+    
+    // 비디오 URL 배열 추출 시도
+    let videoUrls: string[] = [];
+    const videoUrlsMatch = /"videoUrls"\s*:\s*\[(.*?)\]/g.exec(rawText);
+    if (videoUrlsMatch && videoUrlsMatch[1]) {
+      // 배열 내용을 추출해서 분리
+      const urlsString = videoUrlsMatch[1];
+      // 따옴표로 둘러싸인 URL 추출
+      const urlMatches = urlsString.match(/"(https?:\/\/[^"]+)"/g);
+      if (urlMatches) {
+        videoUrls = urlMatches.map(url => url.replace(/"/g, ''));
+      }
+    }
     
     // 추출된 데이터가 있으면 응급 객체에 추가
     if (descriptionMatch && descriptionMatch[1]) {
@@ -258,6 +294,18 @@ function createEmergencyResponse(rawText: string): any {
         validCategories.includes(category) ? category : "개발자 도구";
     }
     
+    if (fullContentMatch && fullContentMatch[1]) {
+      emergency.interestingTweetsOrStories[0].fullContent = fullContentMatch[1];
+    }
+    
+    if (imageUrls.length > 0) {
+      emergency.interestingTweetsOrStories[0].imageUrls = imageUrls;
+    }
+    
+    if (videoUrls.length > 0) {
+      emergency.interestingTweetsOrStories[0].videoUrls = videoUrls;
+    }
+    
     return emergency;
   } catch (error) {
     console.error("응급 JSON 생성 실패:", error);
@@ -269,7 +317,10 @@ function createEmergencyResponse(rawText: string): any {
           description_ko: "OpenAI 응답 처리 중 오류가 발생했습니다.",
           title_ko: "응답 처리 오류",
           story_or_tweet_link: "https://www.example.com",
-          category: "개발자 도구"
+          category: "개발자 도구",
+          fullContent: "",
+          imageUrls: [] as string[],
+          videoUrls: [] as string[]
         }
       ]
     };

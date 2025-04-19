@@ -5,6 +5,16 @@ import { BlockObjectRequest } from '@notionhq/client/build/src/api-endpoints';
 
 dotenv.config();
 
+// URL 유효성 검사 함수
+function isValidUrl(urlString: string): boolean {
+  try {
+    const url = new URL(urlString);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch (e) {
+    return false;
+  }
+}
+
 // Notion 클라이언트 설정
 const notion = new Client({
   auth: process.env.NOTION_API_KEY,
@@ -160,6 +170,25 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
             select: {
               name: getCategoryFromContent(item.category, item.translated || item.original)
             }
+          },
+          Content_full: {
+            rich_text: [
+              {
+                text: {
+                  content: item.content_full ? item.content_full.substring(0, 2000) : '',
+                }
+              }
+            ]
+          },
+          Image_URL: {
+            url: Array.isArray(item.image_url) && item.image_url.length > 0 && isValidUrl(item.image_url[0]) 
+              ? item.image_url[0] 
+              : "https://example.com/placeholder-image.jpg"
+          },
+          Video_URL: {
+            url: Array.isArray(item.video_url) && item.video_url.length > 0 && isValidUrl(item.video_url[0])
+              ? item.video_url[0]
+              : "https://example.com/placeholder-video.mp4"
           }
         },
         children: blocks,
