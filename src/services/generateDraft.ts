@@ -50,8 +50,9 @@ export async function generateDraft(rawStories: string) {
     const completion = await openai.chat.completions.create({
       model: model,
       temperature: 0.6, // 약간의 창의성 허용
-      max_tokens: 1500, // 충분한 길이 확보
+      max_tokens: 3500, // 충분한 길이 확보 (1500에서 3000으로 증가)
       // reasoning_effort: "high", // 추론 모델을 쓸 때 ex. o3
+      response_format: { "type": "json_object" }, // 명시적으로 JSON 응답 요청
       messages,
       store: true,
     });
