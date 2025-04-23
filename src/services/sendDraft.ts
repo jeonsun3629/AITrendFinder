@@ -154,15 +154,6 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
               }
             ]
           },
-          Content_og: {
-            rich_text: [
-              {
-                text: {
-                  content: item.original || '',
-                }
-              }
-            ]
-          },
           URL: {
             url: item.link || null,
           },
@@ -176,6 +167,15 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
               {
                 text: {
                   content: item.content_full ? item.content_full.substring(0, 2000) : '',
+                }
+              }
+            ]
+          },
+          Content_full_kr: {
+            rich_text: [
+              {
+                text: {
+                  content: item.content_full_ko ? item.content_full_ko.substring(0, 2000) : '',
                 }
               }
             ]

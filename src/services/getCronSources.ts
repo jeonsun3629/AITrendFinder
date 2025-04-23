@@ -14,12 +14,12 @@ export async function getCronSources(): Promise<{ identifier: string }[]> {
     const sources: { identifier: string }[] = [
       // 공식 블로그
       { identifier: "https://deepmind.google/discover/blog/" },
-      { identifier: "https://huggingface.co/blog" },
+      { identifier: "https://huggingface.co/blog/community" },
       { identifier: "https://ai.meta.com/blog/" },
       { identifier: "https://openai.com/news/" },
       { identifier: "https://www.anthropic.com/news" },
       { identifier: "https://www.firecrawl.dev/blog" },
-      
+ 
       // 뉴스
       { identifier: "https://www.wsj.com/technology" },
       { identifier: "https://www.reuters.com/technology/artificial-intelligence/" },
