@@ -15,6 +15,7 @@ const StorySchema = z.object({
   link: z.string().describe("A link to the post or story"),
   date_posted: z.string().describe("The date the story or post was published"),
   fullContent: z.string().optional().describe("Full content of the story or post"),
+  fullContent_kr: z.string().optional().describe("Korean translation of the full content"),
   imageUrls: z.array(z.string()).optional().describe("Image URLs from the post"),
   videoUrls: z.array(z.string()).optional().describe("Video URLs from the post")
 });
@@ -223,6 +224,8 @@ export async function scrapeSources(
             2. Preserve ALL paragraphs, line breaks, headers, and formatting of the original content exactly as they appear.
             3. Include the ENTIRE article text, even if it is very long.
             4. For image and video URLs, convert relative URLs to absolute ones by prepending ${new URL(source).origin} if needed.
+            5. Remove any unnecessary metadata, navigation elements, or footer information from the content.
+            6. Make sure to properly escape any special characters in the fullContent.
           `;
           
           // 먼저 구조화된 정보 추출
@@ -366,7 +369,7 @@ export async function scrapeSources(
                       // 콘텐츠가 오류 메시지를 포함하는지 확인
                       if (contentData.fullContent.includes('400') && 
                           contentData.fullContent.includes('Bad Request')) {
-                        console.error(`Content contains error message. Cleaning...`);
+                        console.error(`Content contains error message. Will try alternative extraction.`);
                         contentData.fullContent = "";
                       }
                     }
@@ -382,13 +385,110 @@ export async function scrapeSources(
               // 추출된 전체 내용과 미디어 URL 설정
               if (contentData) {
                 // 콘텐츠 유효성 검사
-                if (contentData.fullContent && 
-                    !contentData.fullContent.includes('400') && 
-                    !contentData.fullContent.includes('Bad Request')) {
+                let isValidContent = true;
+                if (contentData.fullContent) {
+                  if (contentData.fullContent.includes('400') && 
+                      contentData.fullContent.includes('Bad Request')) {
+                    console.error(`Content contains error message. Will try alternative extraction.`);
+                    isValidContent = false;
+                  } else {
+                    console.log(`Content successfully extracted with ${contentData.fullContent.length} characters`);
+                  }
+                } else {
+                  isValidContent = false;
+                }
+                
+                if (!isValidContent) {
+                  // 대체 추출 시도
+                  try {
+                    console.log(`Attempting alternative content extraction for ${storyUrl}`);
+                    // scrape 메서드 대신 extract 메서드 사용
+                    const alternativeScrapeResult = await app.extract([storyUrl], {
+                      prompt: `
+                        Extract ONLY the main content of this article in markdown format.
+                        Remove all navigation elements, ads, footers, and unnecessary metadata.
+                        Preserve the original formatting including headers, paragraphs, and lists.
+                        Format the content as clean markdown text.
+                        Return ONLY the extracted markdown content without any explanations or metadata.
+                      `
+                    });
+                    
+                    if (alternativeScrapeResult.success && 
+                        alternativeScrapeResult.data) {
+                      // 응답 형식에 따라 텍스트 추출
+                      let extractedText = '';
+                      const responseData = alternativeScrapeResult.data as any;
+                      
+                      if (typeof responseData === 'string' && responseData.length > 100) {
+                        extractedText = responseData;
+                      } else if (responseData.content && typeof responseData.content === 'string') {
+                        extractedText = responseData.content;
+                      } else if (responseData.markdown && typeof responseData.markdown === 'string') {
+                        extractedText = responseData.markdown;
+                      } else if (responseData.text && typeof responseData.text === 'string') {
+                        extractedText = responseData.text;
+                      }
+                      
+                      if (extractedText.length > 100) {
+                        // 대체 추출 성공
+                        contentData.fullContent = extractedText;
+                        console.log(`Alternative extraction successful: ${contentData.fullContent.length} characters`);
+                        isValidContent = true;
+                      } else {
+                        console.error(`Alternative extraction succeeded but content too short (${extractedText.length} chars)`);
+                      }
+                    } else {
+                      console.error(`Alternative extraction failed: ${alternativeScrapeResult.error || 'Unknown error'}`);
+                    }
+                  } catch (altError) {
+                    console.error(`Alternative extraction error: ${altError instanceof Error ? altError.message : 'Unknown error'}`);
+                  }
+                }
+                
+                // 최종 콘텐츠 설정
+                if (isValidContent && contentData.fullContent) {
+                  // 원본 콘텐츠 저장
                   story.fullContent = contentData.fullContent;
+                  
+                  // 한국어 번역 생성 및 저장
+                  try {
+                    console.log(`Translating content to Korean for ${storyUrl}`);
+                    const translationResult = await app.extract([storyUrl], {
+                      prompt: `
+                        Translate the following article content from English to Korean.
+                        Preserve all formatting, headers, and paragraph structures in the Korean translation.
+                        The article content is:
+
+                        ${contentData.fullContent.substring(0, 8000)}
+                        
+                        Return ONLY the Korean translation as plain text without any explanation or metadata.
+                      `
+                    });
+                    
+                    if (translationResult.success && translationResult.data) {
+                      const translationData = translationResult.data as any;
+                      if (typeof translationData === 'string' && translationData.length > 100) {
+                        story.fullContent_kr = translationData;
+                        console.log(`Korean translation successful: ${translationData.length} characters`);
+                      } else if (translationData.translation && typeof translationData.translation === 'string') {
+                        story.fullContent_kr = translationData.translation;
+                        console.log(`Korean translation successful: ${translationData.translation.length} characters`);
+                      } else {
+                        console.error(`Translation result is not in expected format`);
+                        story.fullContent_kr = "";
+                      }
+                    } else {
+                      console.error(`Translation failed: ${translationResult.error || 'Unknown error'}`);
+                      story.fullContent_kr = "";
+                    }
+                  } catch (translationError) {
+                    console.error(`Translation error: ${translationError instanceof Error ? translationError.message : 'Unknown error'}`);
+                    story.fullContent_kr = "";
+                  }
                 } else {
                   console.log(`Invalid content detected, setting empty content`);
                   story.fullContent = "";
+                  story.fullContent_kr = "";
                 }
                 
                 // 이미지 및 비디오 URL 설정
@@ -403,6 +503,7 @@ export async function scrapeSources(
               } else {
                 console.error(`Failed to extract content after ${maxAttempts} attempts for ${storyUrl}`);
                 story.fullContent = "";
+                story.fullContent_kr = "";
                 story.imageUrls = [];
                 story.videoUrls = [];
               }
@@ -410,6 +511,7 @@ export async function scrapeSources(
               console.error(`Error extracting content for ${story.link}:`, contentError);
               // 오류 발생 시 기본값 설정
               story.fullContent = "";
+              story.fullContent_kr = "";
               story.imageUrls = [];
               story.videoUrls = [];
             }
