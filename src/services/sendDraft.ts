@@ -20,6 +20,89 @@ const notion = new Client({
   auth: process.env.NOTION_API_KEY,
 });
 
+/**
+ * 텍스트를 일정 길이로 제한
+ */
+function truncateText(text: string | undefined, maxLength: number = 2000): string {
+  if (!text) return '';
+  
+  // 객체인 경우 문자열로 변환 시도
+  if (typeof text === 'object') {
+    try {
+      text = JSON.stringify(text);
+    } catch (e) {
+      text = String(text);
+    }
+  }
+  
+  return text?.substring(0, maxLength) || '';
+}
+
+/**
+ * 배열에서 유효한 URL을 찾아 반환
+ */
+function getValidUrlFromArray(urls: any[] | undefined, defaultUrl: string): string {
+  if (!urls || !Array.isArray(urls) || urls.length === 0) {
+    return defaultUrl;
+  }
+  
+  for (const url of urls) {
+    const urlStr = typeof url === 'string' ? url : '';
+    if (isValidUrl(urlStr)) {
+      return urlStr;
+    }
+  }
+  
+  return defaultUrl;
+}
+
+/**
+ * Notion용 리치 텍스트 형식으로 변환
+ */
+function createRichText(content: string | any): { text: { content: string } }[] {
+  // 내용이 없거나 최대 크기를 초과하는 경우 처리
+  if (!content) return [{ text: { content: '' } }];
+  
+  // 객체인 경우 문자열로 변환 시도
+  if (typeof content === 'object') {
+    try {
+      content = JSON.stringify(content);
+    } catch (e) {
+      content = String(content);
+    }
+  }
+  
+  // 문자열이 아닌 경우 변환
+  if (typeof content !== 'string') {
+    content = String(content);
+  }
+  
+  // 노션 API 텍스트 제한 (2000자)
+  const truncated = truncateText(content);
+  return [{ text: { content: truncated } }];
+}
+
+/**
+ * Notion 블록을 생성합니다
+ */
+function createParagraphBlock(content: string, link?: string): BlockObjectRequest {
+  return {
+    object: "block",
+    type: "paragraph",
+    paragraph: {
+      rich_text: [
+        {
+          type: "text",
+          text: { 
+            content,
+            link: link ? { url: link } : null
+          },
+        }
+      ],
+    }
+  };
+}
+
 async function sendDraftToDiscord(draft_post: string) {
   try {
     const response = await axios.post(
@@ -74,57 +157,19 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
     for (const item of draft.translatedContent) {
       if (!item.translated && !item.original) continue;
       
-      const blocks: BlockObjectRequest[] = [
-        {
-          object: "block",
-          type: "paragraph",
-          paragraph: {
-            rich_text: [
-              {
-                type: "text",
-                text: { 
-                  content: item.translated || item.original,
-                },
-              }
-            ],
-          }
-        }
-      ];
+      // 블록 생성
+      const blocks: BlockObjectRequest[] = [];
+      
+      // 번역된 내용 추가
+      blocks.push(createParagraphBlock(item.translated || item.original));
       
       // 원문이 있고 번역도 있는 경우 원문도 추가
       if (item.original && item.translated) {
-        blocks.push({
-          object: "block",
-          type: "paragraph",
-          paragraph: {
-            rich_text: [
-              {
-                type: "text",
-                text: { 
-                  content: '원문: ' + item.original,
-                },
-              }
-            ],
-          }
-        });
+        blocks.push(createParagraphBlock('원문: ' + item.original));
       }
       
       // 링크 추가
-      blocks.push({
-        object: "block",
-        type: "paragraph",
-        paragraph: {
-          rich_text: [
-            {
-              type: "text",
-              text: { 
-                content: item.link || '',
-                link: item.link ? { url: item.link } : null
-              },
-            }
-          ],
-        }
-      });
+      blocks.push(createParagraphBlock(item.link || '', item.link));
       
       await notion.pages.create({
         parent: {
@@ -135,7 +180,13 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
             title: [
               {
                 text: {
-                  content: item.title_ko || item.translated || item.original,
+                  content: typeof item.title_ko === 'string' 
+                    ? item.title_ko 
+                    : typeof item.title_ko === 'object' && item.title_ko?.text 
+                      ? String(item.title_ko.text) 
+                      : typeof item.translated === 'string' 
+                        ? item.translated 
+                        : String(item.original || '무제'),
                 },
               },
             ],
@@ -146,13 +197,7 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
             },
           },
           Content_kr: {
-            rich_text: [
-              {
-                text: {
-                  content: item.translated || '',
-                }
-              }
-            ]
+            rich_text: createRichText(item.description_ko || '')
           },
           URL: {
             url: item.link || null,
@@ -163,32 +208,16 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
             }
           },
           Content_full: {
-            rich_text: [
-              {
-                text: {
-                  content: item.content_full ? item.content_full.substring(0, 2000) : '',
-                }
-              }
-            ]
+            rich_text: createRichText(truncateText(item.content_full))
           },
           Content_full_kr: {
-            rich_text: [
-              {
-                text: {
-                  content: item.content_full_ko ? item.content_full_ko.substring(0, 2000) : '',
-                }
-              }
-            ]
+            rich_text: createRichText(truncateText(item.content_full_kr))
           },
           Image_URL: {
-            url: Array.isArray(item.image_url) && item.image_url.length > 0 && isValidUrl(item.image_url[0]) 
-              ? item.image_url[0] 
-              : "https://example.com/placeholder-image.jpg"
+            url: getValidUrlFromArray(item.image_url, "https://example.com/placeholder-image.jpg")
           },
           Video_URL: {
-            url: Array.isArray(item.video_url) && item.video_url.length > 0 && isValidUrl(item.video_url[0])
-              ? item.video_url[0]
-              : "https://example.com/placeholder-video.mp4"
+            url: getValidUrlFromArray(item.video_url, "https://example.com/placeholder-video.mp4")
           }
         },
         children: blocks,

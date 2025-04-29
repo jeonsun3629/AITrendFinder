@@ -10,28 +10,27 @@ export async function getCronSources(): Promise<{ identifier: string }[]> {
     const hasXApiKey = !!process.env.X_API_BEARER_TOKEN;
     const hasFirecrawlKey = !!process.env.FIRECRAWL_API_KEY;
 
-    // Define sources based on available API keys
+    // Define sources
     const sources: { identifier: string }[] = [
       // 공식 블로그
       { identifier: "https://deepmind.google/discover/blog/" },
       { identifier: "https://huggingface.co/blog/community" },
-      { identifier: "https://ai.meta.com/blog/" },
-      { identifier: "https://openai.com/news/" },
-      { identifier: "https://www.anthropic.com/news" },
-      { identifier: "https://www.firecrawl.dev/blog" },
- 
-      // 뉴스
-      { identifier: "https://www.wsj.com/technology" },
-      { identifier: "https://www.reuters.com/technology/artificial-intelligence/" },
-      { identifier: "https://www.bloomberg.com/technology" },
+      // { identifier: "https://ai.meta.com/blog/" },
+      // { identifier: "https://openai.com/news/" },
+      // { identifier: "https://www.anthropic.com/news" },
+      // { identifier: "https://www.firecrawl.dev/blog" },
 
-      // 블로그
-      { identifier: "https://news.ycombinator.com/" },
-      { identifier: "https://simonwillison.net/" },
-      { identifier: "https://buttondown.com/ainews/archive/" },
+      // // 뉴스
+      // { identifier: "https://www.wsj.com/technology" },
+      // { identifier: "https://www.reuters.com/technology/artificial-intelligence/" },
 
-      // 트위터
-      ...(hasXApiKey ? [{ identifier: "https://x.com/minchoi" }] : []),
+      // // 블로그
+      // { identifier: "https://news.ycombinator.com/" },
+      // { identifier: "https://simonwillison.net/" },
+      // { identifier: "https://buttondown.com/ainews/archive/" },
+
+      // // 트위터 (항상 포함)
+      // { identifier: "https://x.com/minchoi" },
     ];
 
     // Return the full objects instead of mapping to strings

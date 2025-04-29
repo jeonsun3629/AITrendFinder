@@ -2,9 +2,18 @@ import FirecrawlApp from "@mendable/firecrawl-js";
 import dotenv from "dotenv";
 // Removed Together import
 import { z } from "zod";
+// 외부 API 호출 실패로 인해 fetch import 제거
 // Removed zodToJsonSchema import since we no longer enforce JSON output via Together
+import axios from "axios"; // axios 추가
 
 dotenv.config();
+
+// 환경변수에서 설정값 로드 또는 기본값 사용
+const BATCH_SIZE = parseInt(process.env.CRAWL_BATCH_SIZE || '3', 10);
+const BATCH_DELAY = parseInt(process.env.CRAWL_BATCH_DELAY || '5000', 10);
+const REQUEST_DELAY = parseInt(process.env.CRAWL_ITEM_DELAY || '1000', 10);
+const MAX_STORIES_PER_SOURCE = parseInt(process.env.MAX_STORIES_PER_SOURCE || '3', 10);
+const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3', 10);
 
 // Initialize Firecrawl
 const app = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY });
@@ -17,7 +26,15 @@ const StorySchema = z.object({
   fullContent: z.string().optional().describe("Full content of the story or post"),
   fullContent_kr: z.string().optional().describe("Korean translation of the full content"),
   imageUrls: z.array(z.string()).optional().describe("Image URLs from the post"),
-  videoUrls: z.array(z.string()).optional().describe("Video URLs from the post")
+  videoUrls: z.array(z.string()).optional().describe("Video URLs from the post"),
+  popularity: z.string().optional().describe("Popularity metrics like retweets, likes, etc.")
+});
+
+// 전체 콘텐츠 추출을 위한 스키마 추가
+const ContentSchema = z.object({
+  fullContent: z.string().describe("The full content of the article"),
+  imageUrls: z.array(z.string()).optional().describe("Image URLs from the article"),
+  videoUrls: z.array(z.string()).optional().describe("Video URLs from the article")
 });
 
 const StoriesSchema = z.object({
@@ -27,511 +44,423 @@ const StoriesSchema = z.object({
 });
 
 // Define the TypeScript type for a story using the schema
-type Story = z.infer<typeof StorySchema>;
+export type Story = z.infer<typeof StorySchema>;
 
 /**
- * Scrape sources using Firecrawl (for non-Twitter URLs) and the Twitter API.
- * Returns a combined array of story objects.
+ * 주어진 날짜 문자열이 24시간 이내인지 확인합니다.
+ * 상대적 시간 표현(today, hours ago 등)에 더 가중치를 둡니다.
+ */
+function isLikelyRecent(dateString: string): boolean {
+  try {
+    // 날짜 문자열이 비어있는 경우
+    if (!dateString || dateString.trim() === '') {
+      return false;
+    }
+    
+    // 날짜 문자열에서 상대적 시간 표현 확인
+    const dateLower = dateString.toLowerCase();
+    
+    // 최근 시간 키워드 확인 (시간 지표)
+    const recentTimeKeywords = [
+      'today', 'hours ago', 'minutes ago', 'just now', 'hour ago',
+      '시간 전', '분 전', '방금', 'yesterday', 'a day ago', '1 day ago'
+    ];
+    
+    // 키워드 기반 확인
+    if (recentTimeKeywords.some(keyword => dateLower.includes(keyword))) {
+      console.log(`최근 시간 키워드 발견: ${dateString}`);
+      return true;
+    }
+    
+    // 숫자 + 시간 단위 패턴 확인 (단일 정규식으로 통합)
+    const timePattern = /(\d+)\s*(hour|minute|day|시간|분|일)\s*(ago|전)?/i;
+    const timeMatch = dateLower.match(timePattern);
+    
+    if (timeMatch) {
+      const amount = parseInt(timeMatch[1]);
+      const unit = timeMatch[2].toLowerCase();
+      
+      // 단위에 따른 시간 확인
+      if (unit.includes('hour') || unit.includes('시간') || unit === 'h') {
+        // 24시간 이내면 최근
+        console.log(`${amount}시간 전으로 확인됨`);
+        return amount <= 24;
+      }
+      
+      if (unit.includes('minute') || unit.includes('분') || unit === 'm') {
+        // 분 단위는 항상 최근
+        console.log(`${amount}분 전으로 확인됨`);
+        return true;
+      }
+      
+      if (unit.includes('day') || unit.includes('일') || unit === 'd') {
+        // 2일 이내면 최근
+        console.log(`${amount}일 전으로 확인됨`);
+        return amount <= 2;
+      }
+    }
+    
+    // 오래된 내용 지표 확인
+    const oldKeywords = [
+      'last week', 'last month', 'last year', 
+      '지난주', '지난달', '작년', 
+      '3 days ago', '4 days ago', '5 days ago'
+    ];
+    
+    if (oldKeywords.some(keyword => dateLower.includes(keyword))) {
+      console.log(`오래된 내용 지표 발견: ${dateString}`);
+      return false;
+    }
+    
+    // 오늘 날짜와 일치 확인
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0]; // YYYY-MM-DD
+    
+    if (dateLower.includes(todayStr)) {
+      console.log(`오늘 날짜 포함: ${dateString}`);
+      return true;
+    }
+    
+    // 날짜 파싱 시도
+    try {
+      const date = new Date(dateString);
+      
+      // 유효한 날짜인 경우
+      if (!isNaN(date.getTime())) {
+        // 현재 시간과의 차이 계산 (밀리초)
+        const now = new Date();
+        const timeDiff = now.getTime() - date.getTime();
+        const hoursDiff = timeDiff / (1000 * 60 * 60);
+        
+        // 24시간 이내 확인 - 시간대 차이 고려
+        if (hoursDiff <= 24 && hoursDiff >= -24) { // 시간대 차이 고려하여 미래 날짜도 약간 허용
+          console.log(`24시간 이내 날짜: ${dateString} (${hoursDiff.toFixed(1)}시간 전)`);
+          return true;
+        }
+      }
+    } catch (e) {
+      // 날짜 파싱 실패는 무시
+    }
+    
+    // 기본적으로 최근이 아닌 것으로 간주
+    return false;
+  } catch (e) {
+    console.error(`날짜 확인 중 오류: ${e}`);
+    return false;
+  }
+}
+
+/**
+ * 요청 전 지연 시간을 추가합니다.
+ * @param minDelay 최소 지연 시간 (ms)
+ * @param maxDelay 최대 지연 시간 (ms)
+ */
+async function sleep(minDelay: number = 500, maxDelay: number = 1500): Promise<void> {
+  const delay = minDelay + Math.random() * (maxDelay - minDelay);
+  console.log(`API 요청 제한 방지를 위해 ${Math.round(delay)}ms 대기 중...`);
+  return new Promise(resolve => setTimeout(resolve, delay));
+}
+
+/**
+ * 재시도 로직이 포함된 API 호출 함수
+ */
+async function apiCallWithRetry<T>(
+  fn: () => Promise<T>,
+  retries: number = MAX_RETRIES,
+  baseDelay: number = 1000
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (error: any) {
+    // 429 오류(너무 많은 요청) 또는 일반 오류 처리
+    const isRateLimited = error.status === 429 || 
+                          (error.message && error.message.includes('rate limit'));
+    
+    if (retries <= 0) throw error;
+    
+    // 속도 제한 오류인 경우 지수 백오프 적용
+    const delay = isRateLimited 
+      ? Math.pow(2, MAX_RETRIES - retries) * baseDelay + Math.random() * 1000
+      : baseDelay;
+    
+    console.log(`API 오류${isRateLimited ? '(속도 제한)' : ''}, ${delay}ms 후 재시도합니다. 남은 재시도: ${retries}`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+    
+    return apiCallWithRetry(fn, retries - 1, baseDelay);
+  }
+}
+
+/**
+ * 단일 소스를 스크래핑하는 함수
+ */
+async function scrapeSource(source: string, now: Date): Promise<Story[]> {
+  console.log(`처리 중인 소스: ${source}`);
+  
+  try {
+    // API 속도 제한 방지를 위한 지연
+    await sleep(500, REQUEST_DELAY);
+    
+    // 날짜 형식 준비
+    const todayISO = now.toISOString().split('T')[0];
+    
+    // 구조화된 데이터를 요청하는 프롬프트, 날짜 관련 지시사항 개선
+    const promptForStructured = `
+      IMPORTANT ABOUT DATES:
+      Current time: ${now.toLocaleString()}.
+      Today's date: ${todayISO}.
+      
+      MOST IMPORTANT: Don't rely on exact dates - trust the RELATIVE time indicators on the site:
+      - Words like "today", "just now", "minutes ago", "hours ago"
+      - Recent dates visible on the page
+      - Articles featured in "Latest News", "Recent Posts", or similar sections
+      - Content at the TOP of the page
+      
+      IMPORTANT ABOUT CONTENT SELECTION:
+      - Prioritize stories that appear at the TOP of the page first (these are usually most recent)
+      - If view count or popularity metrics are visible, prioritize stories with HIGHER view counts or engagement
+      - Look for featured, trending, or highlighted stories first
+      - Only include the MOST IMPORTANT and RELEVANT AI/LLM stories, maximum 5 per source
+      - Look for timestamps, publication dates, or "posted X hours ago" indicators
+      
+      IMPORTANT ABOUT EXTRACTION:
+      - We ONLY want stories published within the LAST 24 HOURS
+      - Look for these EXACT time formats and patterns:
+        * "today"
+        * "X hours ago" (e.g., "9 hours ago", "2 hours ago")
+        * "about X hours ago" (e.g., "about 9 hours ago")
+        * "X minutes ago"
+        * "just now"
+        * "1 day ago" or "a day ago" or "yesterday"
+      - Copy the EXACT date string as it appears on the page to date_posted field
+      - For Huggingface blog, pay special attention to time indicators like "1 day ago", "about 23 hours ago"
+      - If you're unsure about the exact time, include the story anyway and provide the time string
+      
+      IMPORTANT ABOUT CONTENT SELECTION:
+      - Prioritize stories that appear at the TOP of the page first (these are usually most recent)
+      - If view count or popularity metrics are visible, prioritize stories with HIGHER view counts or engagement
+      - Look for featured, trending, or highlighted stories first
+      - Only include the MOST IMPORTANT and RELEVANT AI/LLM stories, maximum 5 per source
+      - Look for timestamps, publication dates, or "posted X hours ago" indicators
+      
+      The format should be:
+      {
+        "stories": [
+          {
+            "headline": "headline1",
+            "link": "link1",
+            "date_posted": "Copy the EXACT date/time string from the page. If none, use 'recent'",
+            "popularity": "optional popularity indicator if available (view count, likes, etc.)"
+          },
+          ...
+        ]
+      }
+      
+      IMPORTANT: Include ONLY stories published within the LAST 24 HOURS. Look for:
+      - Stories with timestamps showing "today", "yesterday", "X hours ago", "X days ago", "just now", "minutes ago"
+      - Content at the very TOP of the page with recent indicators
+      If you are unsure about the exact publication time, include it anyway and our system will verify it.
+      If you find NO clear stories published within the last few days, return empty data.
+      
+      The source link is ${source}. 
+      If a story link is not absolute, prepend ${source} to make it absolute. 
+      Return only pure JSON in the specified format.
+    `;
+    
+    // 전체 내용, 이미지, 비디오 추출 프롬프트
+    const promptForContent = `
+      Extract the COMPLETE and FULL content, image URLs, and video URLs from this page.
+      Return as valid JSON with this structure:
+      { 
+        "fullContent": "the full article content as markdown with ALL paragraphs, sections, and formatting preserved",
+        "imageUrls": ["url1", "url2", ...],
+        "videoUrls": ["url1", "url2", ...]
+      }
+      
+      VERY IMPORTANT: 
+      1. Do NOT truncate, shorten, or summarize the fullContent. 
+      2. Preserve ALL paragraphs, line breaks, headers, and formatting of the original content exactly as they appear.
+      3. Include the ENTIRE article text, even if it is very long.
+      4. For image and video URLs:
+         - Convert ALL relative URLs to absolute ones by prepending ${new URL(source).origin} if needed
+         - Include Open Graph (og:image) and Twitter card images
+         - Include ALL article images, charts, diagrams and figures
+         - Include thumbnails for videos
+         - Extract embedded video players (YouTube, Vimeo, Twitter videos, etc.)
+         - IMPORTANT: ONLY extract images and videos that are part of the MAIN ARTICLE CONTENT
+         - DO NOT include profile pictures, logos, icons, navigation images, sidebar widgets, or advertisements
+         - Focus on extracting content images like photos, charts, graphs, diagrams, and screenshots
+      5. Remove any unnecessary metadata, navigation elements, or footer information from the content.
+      6. Make sure to properly escape any special characters in the fullContent.
+      7. Media detection:
+         - For images: Look for .jpg, .jpeg, .png, .webp, .gif, .svg files
+         - For videos: Look for .mp4, .webm, .mov files and embedded players from YouTube, Vimeo, Twitter, etc.
+         - Also extract URLs containing 'video', 'player', 'embed', 'media', etc.
+         - For YouTube videos, transform watch URLs to embed URLs where possible
+         - EXTRACT ALL HTML image tags (<img src="...">) from the article content
+         - Also look for background-image CSS properties in the article content
+      7. Return only pure JSON in the specified format.
+    `;
+    
+    // 먼저 구조화된 정보 추출
+    const scrapeResult = await apiCallWithRetry(async () => {
+      return await app.extract([source], {
+        prompt: promptForStructured,
+        schema: StoriesSchema,
+      });
+    });
+    
+    // 디버깅 - 실제 응답 확인
+    console.log(`Firecrawl 원본 응답:`, JSON.stringify(scrapeResult).substring(0, 500) + '...');
+    
+    if (!scrapeResult.success) {
+      throw new Error(`Failed to scrape: ${scrapeResult.error}`);
+    }
+    
+    // 추출된 데이터
+    const todayStories = scrapeResult.data as { stories: Story[] };
+    
+    if (!todayStories || !todayStories.stories || todayStories.stories.length === 0) {
+      console.log(`${source}에서 최근 스토리를 찾을 수 없습니다.`);
+      return [];
+    }
+    
+    // 각 스토리 처리 및 최신성 필터링
+    const filteredStories: Story[] = [];
+    
+    // 스토리 수 제한 (API 속도 제한 방지)
+    const limitedStories = todayStories.stories.slice(0, MAX_STORIES_PER_SOURCE);
+    
+    for (const story of limitedStories) {
+      // 최근 24시간 내 콘텐츠인지 확인
+      const isRecent = isLikelyRecent(story.date_posted);
+          
+      if (isRecent) {
+        console.log(`최근 스토리 발견: ${story.headline}`);
+        filteredStories.push(story);
+        
+        // 링크가 있는 경우 내용, 이미지, 비디오 추출
+        if (story.link) {
+          try {
+            // API 속도 제한 방지를 위한 지연 (각 요청 사이)
+            await sleep(REQUEST_DELAY, REQUEST_DELAY * 2);
+            
+            console.log(`스토리 내용 추출 시작: ${story.headline} (${story.link})`);
+            
+            // 재시도 로직 적용 및 스키마 추가
+            const contentResult = await apiCallWithRetry(async () => {
+              return await app.extract([story.link], {
+                prompt: promptForContent,
+                schema: ContentSchema
+              });
+            });
+            
+            // 디버깅을 위한 로그 추가
+            console.log(`내용 추출 상태: ${contentResult.success ? '성공' : '실패'}`);
+            
+            if (contentResult.success) {
+              // 응답 구조 확인을 위한 로그 추가
+              console.log(`응답 데이터 형식: ${typeof contentResult.data}`, 
+                        typeof contentResult.data === 'object' ? Object.keys(contentResult.data) : 'not object');
+              
+              // 다양한 응답 구조 처리
+              let contentData;
+              if (typeof contentResult.data === 'object') {
+                contentData = contentResult.data;
+              } else if (typeof contentResult.data === 'string') {
+                try {
+                  contentData = JSON.parse(contentResult.data);
+                } catch (e) {
+                  contentData = { fullContent: contentResult.data };
+                }
+              }
+              
+              // 내용 추출
+              if (contentData) {
+                story.fullContent = contentData.fullContent || '';
+                story.imageUrls = contentData.imageUrls || [];
+                story.videoUrls = contentData.videoUrls || [];
+                
+                // 내용이 추출되었는지 확인 로그
+                const contentPreview = story.fullContent ? story.fullContent.substring(0, 100) : '';
+                console.log(`내용 추출 결과: ${contentPreview.length > 0 ? '성공' : '실패'} (미리보기: ${contentPreview}...)`);
+                console.log(`이미지 URL 개수: ${story.imageUrls?.length || 0}, 비디오 URL 개수: ${story.videoUrls?.length || 0}`);
+              } else {
+                console.log(`내용 데이터 없음: ${story.headline}`);
+              }
+            } else {
+              console.error(`내용 추출 실패 (${story.link}): ${contentResult.error || '알 수 없는 오류'}`);
+            }
+          } catch (contentError) {
+            console.error(`내용 추출 중 오류 (${story.link}):`, contentError);
+            // 429 오류 발생 시 기본 정보만 사용
+            story.fullContent = `[원본 내용을 가져올 수 없습니다 - API 속도 제한. 자세한 내용은 원본 링크를 참조하세요]`;
+            story.imageUrls = [];
+            story.videoUrls = [];
+          }
+          
+          // 내용이 없으면 헤드라인을 내용으로 사용
+          if (!story.fullContent || story.fullContent.trim() === '') {
+            console.log(`내용 없음, 헤드라인을 내용으로 사용: ${story.headline}`);
+            story.fullContent = story.headline;
+          }
+        }
+      } else {
+        console.log(`오래된 스토리 제외: ${story.headline} - ${story.date_posted}`);
+      }
+    }
+    
+    console.log(`${source}에서 ${filteredStories.length}개의 최근 스토리를 찾았습니다.`);
+    return filteredStories;
+  } catch (error) {
+    console.error(`Error scraping ${source}:`, error);
+    return [];
+  }
+}
+
+/**
+ * Scrape sources using Firecrawl and returns a combined array of story objects.
+ * Uses parallel processing to improve performance.
  */
 export async function scrapeSources(
   sources: { identifier: string }[],
 ): Promise<Story[]> {
-  // Explicitly type the stories array so it is Story[]
-  const combinedText: { stories: Story[] } = { stories: [] };
-
-  // Configure toggles for scrapers
-  const useScrape = true;
-  const useTwitter = true;
-  
-  // 날짜 형식 개선: 오늘과 어제의 날짜를 여러 형식으로 준비
+  // 시스템 시간 사용
   const now = new Date();
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  
-  // ISO 형식 날짜 (YYYY-MM-DD)
-  const todayISO = now.toISOString().split('T')[0];
-  const yesterdayISO = yesterday.toISOString().split('T')[0];
-  
-  // 로케일 형식 날짜
-  const todayLocal = now.toLocaleDateString();
-  const yesterdayLocal = yesterday.toLocaleDateString();
-  
-  // 월/일 형식 (MM/DD 또는 DD/MM)
-  const todayMonthDay = `${now.getMonth() + 1}/${now.getDate()}`;
-  const todayDayMonth = `${now.getDate()}/${now.getMonth() + 1}`;
-  
-  // 시간 범위 설정 (24시간)
-  const tweetStartTime = new Date(
-    Date.now() - 24 * 60 * 60 * 1000,
-  ).toISOString();
   
   console.log(`총 ${sources.length}개의 소스를 처리합니다.`);
-  console.log(`오늘 날짜: ${todayISO} (${todayLocal})`);
+  console.log(`시스템 시간: ${now.toISOString()}`);
+  console.log(`[중요] 상대적 시간 표현(오늘, 몇 시간 전 등)을 중심으로 최근 24시간 내 게시물을 식별합니다.`);
 
-  for (const sourceObj of sources) {
-    const source = sourceObj.identifier;
-    console.log(`처리 중인 소스: ${source}`);
-
-    // --- 1) Handle Twitter/X sources ---
-    if (source.includes("x.com")) {
-      console.log(`X/트위터 소스 감지: ${source}`);
-      if (useTwitter) {
-        const usernameMatch = source.match(/x\.com\/([^\/]+)/);
-        if (!usernameMatch) continue;
-        const username = usernameMatch[1];
-
-        // Construct the query and API URL
-        const query = `from:${username} has:media -is:retweet -is:reply`;
-        const encodedQuery = encodeURIComponent(query);
-        const encodedStartTime = encodeURIComponent(tweetStartTime);
-        // 이미지, 미디어, 임베디드 URL 등을 포함한 확장된 트윗 정보를 요청
-        const apiUrl = `https://api.x.com/2/tweets/search/recent?query=${encodedQuery}&max_results=3&start_time=${encodedStartTime}&expansions=attachments.media_keys&media.fields=url,preview_image_url,type&sort_order=relevancy`;
-
-        try {
-          console.log(`X API 호출 중: ${username}`);
-          const response = await fetch(apiUrl, {
-            headers: {
-              Authorization: `Bearer ${process.env.X_API_BEARER_TOKEN}`,
-            },
-          });
-          if (!response.ok) {
-            throw new Error(
-              `Failed to fetch tweets for ${username}: ${response.statusText}`,
-            );
-          }
-          const tweets = await response.json();
-
-          if (tweets.meta?.result_count === 0) {
-            console.log(`No tweets found for username ${username}.`);
-          } else if (Array.isArray(tweets.data)) {
-            console.log(`Tweets found from username ${username}`);
-            const stories = tweets.data.map(
-              (tweet: any): Story => {
-                // 트윗 미디어 처리
-                let imageUrls: string[] = [];
-                let videoUrls: string[] = [];
-                
-                // 트윗에 미디어가 포함되어 있는지 확인
-                if (tweet.attachments?.media_keys && tweets.includes?.media) {
-                  const mediaItems = tweets.includes.media;
-                  
-                  // 트윗의 미디어 키를 사용하여 관련 미디어 찾기
-                  for (const mediaKey of tweet.attachments.media_keys) {
-                    const media = mediaItems.find((m: any) => m.media_key === mediaKey);
-                    if (media) {
-                      // 미디어 타입에 따라 URL 추가
-                      if (media.type === 'photo' && media.url) {
-                        imageUrls.push(media.url);
-                      } else if (media.type === 'video' && (media.url || media.preview_image_url)) {
-                        // 비디오는 미리보기 이미지 URL이나 실제 URL 중 사용 가능한 것을 넣음
-                        videoUrls.push(media.url || media.preview_image_url);
-                      }
-                    }
-                  }
-                }
-                
-                // URLs in the tweet text
-                const urlRegex = /(https?:\/\/[^\s]+)/g;
-                const urlMatches = tweet.text.match(urlRegex);
-                if (urlMatches) {
-                  for (const url of urlMatches) {
-                    // 이미지나 비디오 URL로 보이는 것들 분류
-                    if (url.match(/\.(jpg|jpeg|png|gif|webp)(\?.*)?$/i)) {
-                      imageUrls.push(url);
-                    } else if (url.match(/\.(mp4|webm|mov|avi)(\?.*)?$/i) || url.includes('youtube.com') || url.includes('youtu.be')) {
-                      videoUrls.push(url);
-                    }
-                  }
-                }
-                
-                return {
-                  headline: tweet.text,
-                  link: `https://x.com/i/status/${tweet.id}`,
-                  date_posted: tweetStartTime,
-                  fullContent: tweet.text, // 트윗 전체 내용
-                  imageUrls: imageUrls,
-                  videoUrls: videoUrls
-                };
-              }
-            );
-            combinedText.stories.push(...stories);
-          } else {
-            console.error("Expected tweets.data to be an array:", tweets.data);
-          }
-        } catch (error: any) {
-          console.error(`Error fetching tweets for ${username}:`, error);
+  try {
+    // 소스를 소규모 배치로 나누어 처리 (API 속도 제한 방지)
+    const allStories: Story[] = [];
+    
+    for (let i = 0; i < sources.length; i += BATCH_SIZE) {
+      const batch = sources.slice(i, i + BATCH_SIZE);
+      console.log(`소스 배치 ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(sources.length/BATCH_SIZE)} 처리 중 (${batch.length}개)...`);
+      
+      // 각 배치를 순차적으로 처리하여 과부하 방지
+      for (const sourceObj of batch) {
+        const sourceStories = await scrapeSource(sourceObj.identifier, now);
+        allStories.push(...sourceStories);
+        
+        // 소스 간에 지연 추가
+        if (sourceObj !== batch[batch.length - 1]) {
+          await sleep(REQUEST_DELAY, REQUEST_DELAY * 1.5);
         }
       }
-    }
-    // --- 2) Handle all other sources with Firecrawl ---
-    else {
-      if (useScrape) {
-        try {
-          // 구조화된 데이터를 요청하는 프롬프트, 날짜 관련 지시사항 개선
-          const promptForStructured = `
-            Return only today's AI or LLM related story or post headlines and links in JSON format from the page content.
-            
-            IMPORTANT ABOUT DATES:
-            Today is ${todayISO} (${todayLocal}).
-            
-            Check for posts with these date formats:
-            - ISO format: ${todayISO}
-            - Local format: ${todayLocal}
-            - Month/Day: ${todayMonthDay}, ${todayDayMonth}
-            - Text indicators like "today", "hours ago", "minutes ago", "just now"
-            
-            ONLY include stories from the LAST 24 HOURS. No older content.
-            
-            IMPORTANT ABOUT CONTENT SELECTION:
-            - Prioritize stories that appear at the TOP of the page first
-            - If view count or popularity metrics are visible, prioritize stories with HIGHER view counts or engagement
-            - Look for featured, trending, or highlighted stories first
-            - Only include the MOST IMPORTANT and RELEVANT AI/LLM stories, maximum 5 per source
-            
-            The format should be:
-            {
-              "stories": [
-                {
-                  "headline": "headline1",
-                  "link": "link1",
-                  "date_posted": "YYYY-MM-DD or exact date string from the page",
-                  "popularity": "optional popularity indicator if available (view count, likes, etc.)"
-                },
-                ...
-              ]
-            }
-            
-            If you're uncertain about the exact date, include the post and note the date format in date_posted.
-            If there are no recent AI or LLM stories, return {"stories": []}.
-
-            The source link is ${source}. 
-            If a story link is not absolute, prepend ${source} to make it absolute. 
-            Return only pure JSON in the specified format.
-          `;
-          
-          // 전체 내용, 이미지, 비디오 추출 프롬프트
-          const promptForContent = `
-            Extract the COMPLETE and FULL content, image URLs, and video URLs from this page.
-            Return in JSON format as:
-            {
-              "fullContent": "the full article content as markdown with ALL paragraphs, sections, and formatting preserved",
-              "imageUrls": ["url1", "url2", ...],
-              "videoUrls": ["url1", "url2", ...]
-            }
-            
-            VERY IMPORTANT: 
-            1. Do NOT truncate, shorten, or summarize the fullContent. 
-            2. Preserve ALL paragraphs, line breaks, headers, and formatting of the original content exactly as they appear.
-            3. Include the ENTIRE article text, even if it is very long.
-            4. For image and video URLs, convert relative URLs to absolute ones by prepending ${new URL(source).origin} if needed.
-            5. Remove any unnecessary metadata, navigation elements, or footer information from the content.
-            6. Make sure to properly escape any special characters in the fullContent.
-          `;
-          
-          // 먼저 구조화된 정보 추출
-          const scrapeResult = await app.extract([source], {
-            prompt: promptForStructured,
-            schema: StoriesSchema,
-          });
-          
-          if (!scrapeResult.success) {
-            throw new Error(`Failed to scrape: ${scrapeResult.error}`);
-          }
-          
-          // 추출된 데이터
-          const todayStories = scrapeResult.data as { stories: Story[] };
-          
-          if (!todayStories || !todayStories.stories || todayStories.stories.length === 0) {
-            console.log(`Found 0 stories from ${source}`);
-            continue;
-          }
-          
-          console.log(`Found ${todayStories.stories.length} stories from ${source}`);
-          
-          // 날짜 검증 로직 추가
-          const validatedStories = todayStories.stories.filter(story => {
-            // 날짜 문자열이 비어있으면 포함
-            if (!story.date_posted || story.date_posted.trim() === '') {
-              console.log(`Story accepted (no date): ${story.headline.substring(0, 50)}...`);
-              return true;
-            }
-            
-            // "today", "hours ago", "minutes ago", "just now" 등의 표현 확인
-            const dateLower = story.date_posted.toLowerCase();
-            if (dateLower.includes('today') || 
-                dateLower.includes('hours ago') || 
-                dateLower.includes('minutes ago') ||
-                dateLower.includes('just now') ||
-                dateLower.includes('시간 전') ||
-                dateLower.includes('분 전') ||
-                dateLower.includes('방금')) {
-              console.log(`Story accepted (recent indicator): ${story.headline.substring(0, 50)}...`);
-              return true;
-            }
-            
-            // ISO 날짜, 로컬 날짜 형식 확인
-            if (dateLower.includes(todayISO) || 
-                dateLower.includes(todayLocal) ||
-                dateLower.includes(todayMonthDay) ||
-                dateLower.includes(todayDayMonth)) {
-              console.log(`Story accepted (date match): ${story.headline.substring(0, 50)}...`);
-              return true;
-            }
-            
-            // 날짜를 파싱하여 24시간 이내인지 확인 시도
-            try {
-              const storyDate = new Date(story.date_posted);
-              const timeDiff = now.getTime() - storyDate.getTime();
-              const hoursDiff = timeDiff / (1000 * 60 * 60);
-              
-              if (!isNaN(hoursDiff) && hoursDiff <= 24) {
-                console.log(`Story accepted (within 24 hours): ${story.headline.substring(0, 50)}...`);
-                return true;
-              }
-            } catch (e) {
-              // 날짜 파싱 실패, 다른 방법으로 검증 시도
-            }
-            
-            console.log(`Story rejected (old): ${story.headline.substring(0, 50)}...`);
-            return false;
-          });
-          
-          console.log(`Validated ${validatedStories.length} of ${todayStories.stories.length} stories from ${source}`);
-          
-          // 스토리 개수 제한
-          if (validatedStories.length > 5) {
-            console.log(`${source}에서 검증된 스토리가 5개 이상입니다. 상위 5개만 사용합니다.`);
-            validatedStories.splice(5);
-          }
-          
-          // 각 기사에 대해 전체 내용과 미디어 URL 추출 시도
-          for (const story of validatedStories) {
-            try {
-              // URL 정규화 - 잘못된 URL 형식 수정
-              let storyUrl = story.link;
-              
-              // URL 유효성 검증 및 수정
-              try {
-                // URL에 쿼리 파라미터와 경로가 섞인 경우 처리
-                // 예: http://huggingface.co/blog/community?sort=recent/INSAIT-Institute/mamaylm
-                if (storyUrl.includes('?') && storyUrl.includes('/', storyUrl.indexOf('?'))) {
-                  const urlParts = storyUrl.split('?');
-                  const baseUrl = urlParts[0];
-                  const queryPart = urlParts[1];
-                  
-                  // 쿼리 부분에 '/' 이후 콘텐츠가 있는지 확인
-                  if (queryPart.includes('/')) {
-                    const queryParams = queryPart.split('/')[0]; // sort=recent 부분
-                    storyUrl = `${baseUrl}?${queryParams}`;
-                    console.log(`URL 형식 수정됨: ${story.link} -> ${storyUrl}`);
-                  }
-                }
-                
-                // URL이 유효한지 확인
-                new URL(storyUrl);
-              } catch (urlError) {
-                console.error(`Invalid URL: ${storyUrl}. Skipping content extraction.`);
-                continue;
-              }
-              
-              // 각 URL에 대한 여러 번의 시도 설정 (최대 3번)
-              let attempts = 0;
-              const maxAttempts = 3;
-              let contentData = null;
-              
-              while (attempts < maxAttempts && !contentData) {
-                attempts++;
-                try {
-                  // 기사 링크에서 전체 내용과 미디어 추출
-                  console.log(`Extracting content from ${storyUrl} (attempt ${attempts})`);
-                  
-                  // 스크랩 전에 URL이 유효한지 확인
-                  try {
-                    const response = await fetch(storyUrl, { method: 'HEAD' });
-                    if (!response.ok) {
-                      throw new Error(`URL returned status ${response.status}`);
-                    }
-                  } catch (error) {
-                    console.error(`URL fetch check failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-                    throw error;
-                  }
-                  
-                  const contentResult = await app.extract([storyUrl], {
-                    prompt: promptForContent,
-                  });
-                  
-                  if (contentResult.success && contentResult.data) {
-                    contentData = contentResult.data as any;
-                    // 로그에 콘텐츠 길이 표시
-                    if (contentData.fullContent) {
-                      console.log(`Successfully extracted content: ${contentData.fullContent.length} characters`);
-                      
-                      // 콘텐츠가 오류 메시지를 포함하는지 확인
-                      if (contentData.fullContent.includes('400') && 
-                          contentData.fullContent.includes('Bad Request')) {
-                        console.error(`Content contains error message. Will try alternative extraction.`);
-                        contentData.fullContent = "";
-                      }
-                    }
-                  }
-                } catch (attemptError) {
-                  console.error(`Attempt ${attempts} failed for ${storyUrl}:`, attemptError);
-                  if (attempts >= maxAttempts) throw attemptError;
-                  // 다음 시도 전에 잠시 대기
-                  await new Promise(resolve => setTimeout(resolve, 2000));
-                }
-              }
-              
-              // 추출된 전체 내용과 미디어 URL 설정
-              if (contentData) {
-                // 콘텐츠 유효성 검사
-                let isValidContent = true;
-                if (contentData.fullContent) {
-                  if (contentData.fullContent.includes('400') && 
-                      contentData.fullContent.includes('Bad Request')) {
-                    console.error(`Content contains error message. Will try alternative extraction.`);
-                    isValidContent = false;
-                  } else {
-                    console.log(`Content successfully extracted with ${contentData.fullContent.length} characters`);
-                  }
-                } else {
-                  isValidContent = false;
-                }
-                
-                if (!isValidContent) {
-                  // 대체 추출 시도
-                  try {
-                    console.log(`Attempting alternative content extraction for ${storyUrl}`);
-                    // scrape 메서드 대신 extract 메서드 사용
-                    const alternativeScrapeResult = await app.extract([storyUrl], {
-                      prompt: `
-                        Extract ONLY the main content of this article in markdown format.
-                        Remove all navigation elements, ads, footers, and unnecessary metadata.
-                        Preserve the original formatting including headers, paragraphs, and lists.
-                        Format the content as clean markdown text.
-                        Return ONLY the extracted markdown content without any explanations or metadata.
-                      `
-                    });
-                    
-                    if (alternativeScrapeResult.success && 
-                        alternativeScrapeResult.data) {
-                      // 응답 형식에 따라 텍스트 추출
-                      let extractedText = '';
-                      const responseData = alternativeScrapeResult.data as any;
-                      
-                      if (typeof responseData === 'string' && responseData.length > 100) {
-                        extractedText = responseData;
-                      } else if (responseData.content && typeof responseData.content === 'string') {
-                        extractedText = responseData.content;
-                      } else if (responseData.markdown && typeof responseData.markdown === 'string') {
-                        extractedText = responseData.markdown;
-                      } else if (responseData.text && typeof responseData.text === 'string') {
-                        extractedText = responseData.text;
-                      }
-                      
-                      if (extractedText.length > 100) {
-                        // 대체 추출 성공
-                        contentData.fullContent = extractedText;
-                        console.log(`Alternative extraction successful: ${contentData.fullContent.length} characters`);
-                        isValidContent = true;
-                      } else {
-                        console.error(`Alternative extraction succeeded but content too short (${extractedText.length} chars)`);
-                      }
-                    } else {
-                      console.error(`Alternative extraction failed: ${alternativeScrapeResult.error || 'Unknown error'}`);
-                    }
-                  } catch (altError) {
-                    console.error(`Alternative extraction error: ${altError instanceof Error ? altError.message : 'Unknown error'}`);
-                  }
-                }
-                
-                // 최종 콘텐츠 설정
-                if (isValidContent && contentData.fullContent) {
-                  // 원본 콘텐츠 저장
-                  story.fullContent = contentData.fullContent;
-                  
-                  // 한국어 번역 생성 및 저장
-                  try {
-                    console.log(`Translating content to Korean for ${storyUrl}`);
-                    const translationResult = await app.extract([storyUrl], {
-                      prompt: `
-                        Translate the following article content from English to Korean.
-                        Preserve all formatting, headers, and paragraph structures in the Korean translation.
-                        The article content is:
-
-                        ${contentData.fullContent.substring(0, 8000)}
-                        
-                        Return ONLY the Korean translation as plain text without any explanation or metadata.
-                      `
-                    });
-                    
-                    if (translationResult.success && translationResult.data) {
-                      const translationData = translationResult.data as any;
-                      if (typeof translationData === 'string' && translationData.length > 100) {
-                        story.fullContent_kr = translationData;
-                        console.log(`Korean translation successful: ${translationData.length} characters`);
-                      } else if (translationData.translation && typeof translationData.translation === 'string') {
-                        story.fullContent_kr = translationData.translation;
-                        console.log(`Korean translation successful: ${translationData.translation.length} characters`);
-                      } else {
-                        console.error(`Translation result is not in expected format`);
-                        story.fullContent_kr = "";
-                      }
-                    } else {
-                      console.error(`Translation failed: ${translationResult.error || 'Unknown error'}`);
-                      story.fullContent_kr = "";
-                    }
-                  } catch (translationError) {
-                    console.error(`Translation error: ${translationError instanceof Error ? translationError.message : 'Unknown error'}`);
-                    story.fullContent_kr = "";
-                  }
-                } else {
-                  console.log(`Invalid content detected, setting empty content`);
-                  story.fullContent = "";
-                  story.fullContent_kr = "";
-                }
-                
-                // 이미지 및 비디오 URL 설정
-                story.imageUrls = Array.isArray(contentData.imageUrls) ? contentData.imageUrls : [];
-                story.videoUrls = Array.isArray(contentData.videoUrls) ? contentData.videoUrls : [];
-                
-                // URL 수정 사항 저장
-                if (storyUrl !== story.link) {
-                  console.log(`Updating story link from ${story.link} to ${storyUrl}`);
-                  story.link = storyUrl;
-                }
-              } else {
-                console.error(`Failed to extract content after ${maxAttempts} attempts for ${storyUrl}`);
-                story.fullContent = "";
-                story.fullContent_kr = "";
-                story.imageUrls = [];
-                story.videoUrls = [];
-              }
-            } catch (contentError) {
-              console.error(`Error extracting content for ${story.link}:`, contentError);
-              // 오류 발생 시 기본값 설정
-              story.fullContent = "";
-              story.fullContent_kr = "";
-              story.imageUrls = [];
-              story.videoUrls = [];
-            }
-          }
-          
-          // 스토리 추가
-          combinedText.stories.push(...validatedStories);
-        } catch (error: any) {
-          if (error.statusCode === 429) {
-            console.error(
-              `Rate limit exceeded for ${source}. Skipping this source.`,
-            );
-          } else {
-            console.error(`Error scraping source ${source}:`, error);
-          }
-        }
+      
+      // 배치 사이에 지연 추가
+      if (i + BATCH_SIZE < sources.length) {
+        console.log(`다음 배치 전 ${BATCH_DELAY/1000}초 대기...`);
+        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
       }
     }
+    
+    console.log(`모든 소스에서 총 ${allStories.length}개의 스토리를 찾았습니다.`);
+    return allStories;
+  } catch (error) {
+    console.error("Error in scrapeSources:", error);
+    return [];
   }
-
-  console.log("Combined Stories:", combinedText.stories);
-  return combinedText.stories;
 }
