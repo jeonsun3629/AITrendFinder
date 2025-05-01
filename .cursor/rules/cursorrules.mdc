@@ -1,0 +1,103 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+  # 1. 프로젝트 컨텍스트 제공
+  - name: "프로젝트_컨텍스트"
+    level: mandatory
+    description: |
+      AI가 전체 구조와 요구사항을 이해할 수 있도록
+      - 프로젝트 목적
+      - 기술 스택 (언어, 프레임워크, 라이브러리)
+      - 주요 모듈/패키지 관계
+      를 간략히 서술하세요.
+    example: |
+      “이 프로젝트는 React(18.x), TypeScript(5.x), Next.js(13.x)를 사용하여
+      블로그 플랫폼을 개발합니다. 주요 기능은 …”
+
+  # 2. 코딩 스타일 가이드
+  - name: "코딩_스타일"
+    level: mandatory
+    description: |
+      팀 표준에 맞춘 일관된 네이밍·포맷을 지시하세요.
+      - 들여쓰기: 스페이스 2칸
+      - 변수명: camelCase
+      - 함수명: 동사+명사 (e.g., fetchUserData)
+    example: |
+      “들여쓰기 스페이스 2, 함수명은 camelCase로 작성해주세요.”
+
+  # 3. SDK/라이브러리 버전 고정
+  - name: "라이브러리_버전"
+    level: guideline
+    description: |
+      AI가 잘못된 예시를 생성하지 않도록
+      사용 중인 주요 패키지의 버전을 명시하세요.
+    example: |
+      “axios@1.4.0, prisma@4.15.0 기준으로 코드 작성 부탁드립니다.”
+
+  # 4. Deprecated API 금지
+  - name: "Deprecated_API_금지"
+    level: mandatory
+    description: |
+      더 이상 사용하지 않는 API나 패턴을 배제하고
+      최신 권장 방식을 활용하도록 지시하세요.
+    example: |
+      “React class component가 아닌 함수형 컴포넌트와 Hooks 사용.”
+
+  # 5. 에러 처리 & 엣지 케이스
+  - name: "에러_처리_명시"
+    level: mandatory
+    description: |
+      네트워크 에러, 예외 상황, 타임아웃, 재시도 로직 등을
+      반드시 포함하도록 요청하세요.
+    example: |
+      “fetch 호출 시 3회 재시도 로직과 오류 메시지를 처리해주세요.”
+
+project_specific:
+  # 6. 기능별 작은 단위로 분할
+  - name: "작은_단위_작업"
+    level: guideline
+    description: |
+      복잡한 기능은 작은 단계로 나누고
+      매 단계마다 “테스트 → 구현” 순으로 요청하세요.
+    example: |
+      “1) 유저 조회 함수 테스트 작성 → 2) 실제 함수 구현 → 3) 통합 테스트”
+
+  # 7. 입출력 예시 포함
+  - name: "입출력_예시"
+    level: mandatory
+    description: |
+      예상하는 함수 입력값과 반환값(또는 API 요청/응답)을
+      반드시 예시로 제시하여 애매모호함을 제거하세요.
+    example: |
+      “getUser(id: string) 호출 시
+       입력: 'user_123'
+       출력: { id: 'user_123', name: '홍길동' }”
+
+  # 8. 코드 리뷰 기준
+  - name: "코드_리뷰_기준"
+    level: guideline
+    description: |
+      AI가 제안 또는 리뷰할 때 일관된 품질을 유지하도록
+      가독성, 성능, 문서화, 테스트 커버리지 기준을 명시하세요.
+    example: |
+      “가독성: 최대 80자 내 줄바꿈, 성능: O(n²) 미만,
+       문서화: JSDoc 사용, 테스트: 커버리지 90% 이상”
+
+  # 9. 응답 언어 일관화
+  - name: "응답_언어"
+    level: mandatory
+    description: |
+      다국어 혼용을 방지하기 위해 출력 언어를
+      한국어 또는 영어 중 하나로 고정하세요.
+    example: |
+      “모든 응답은 한국어로 해주세요.”
+
+  # 10. 글로벌 vs 프로젝트 규칙 분리
+  - name: "규칙_분리_관리"
+    level: guideline
+    description: |
+      전역(`global`)은 팀 공통, 
+
+      프로젝트별(`project_specific`)은 개별 프로젝트 전용 규칙으로 관리하세요.

@@ -2,6 +2,7 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import { Client } from '@notionhq/client';
 import { BlockObjectRequest } from '@notionhq/client/build/src/api-endpoints';
+import { retrieveFullContent } from './contentStorage';
 
 dotenv.config();
 
@@ -57,28 +58,91 @@ function getValidUrlFromArray(urls: any[] | undefined, defaultUrl: string): stri
 }
 
 /**
+ * 원문 내용 가져오기 (Supabase 또는 item.content_full 사용)
+ */
+async function getFullContent(item: any): Promise<string> {
+  // 로깅을 위한 식별자
+  const itemIdentifier = item.title_ko || item.title || item.link || 'unknown';
+  
+  // 우선 Supabase에서 가져오기 시도 - 가능한 모든 ID 사용
+  try {
+    // content_storage_id나 story_id가 있으면 시도
+    if (item.content_storage_id || item.story_id) {
+      const storageId = item.content_storage_id || item.story_id;
+      console.log(`Supabase에서 원문 가져오기 시도: ${itemIdentifier} (ID: ${storageId})`);
+      
+      try {
+        const fullContent = await retrieveFullContent(storageId);
+        if (fullContent) {
+          console.log(`Supabase에서 전체 원문을 가져왔습니다 (${fullContent.length} 바이트)`);
+          return fullContent;
+        }
+      } catch (storageError) {
+        console.error(`Supabase 원문 가져오기 실패 (ID: ${storageId}):`, storageError);
+      }
+    } else {
+      console.log(`${itemIdentifier}: Supabase 저장 ID가 없습니다.`);
+    }
+  } catch (error) {
+    console.error(`Supabase에서 원문 가져오기 실패 (${itemIdentifier}):`, error);
+  }
+  
+  // item.content_full 확인
+  if (item.content_full) {
+    console.log(`${itemIdentifier}: 기존 content_full 사용 (${item.content_full.length} 바이트)`);
+    return item.content_full;
+  }
+  
+  // item.original 확인
+  if (item.original) {
+    console.log(`${itemIdentifier}: original 내용 사용 (${item.original.length} 바이트)`);
+    return item.original;
+  }
+  
+  // 모든 것이 실패한 경우 빈 문자열 반환
+  console.log(`${itemIdentifier}: 사용 가능한 콘텐츠를 찾지 못했습니다.`);
+  return '';
+}
+
+/**
  * Notion용 리치 텍스트 형식으로 변환
  */
 function createRichText(content: string | any): { text: { content: string } }[] {
-  // 내용이 없거나 최대 크기를 초과하는 경우 처리
+  // 내용이 없는 경우 처리
   if (!content) return [{ text: { content: '' } }];
   
-  // 객체인 경우 문자열로 변환 시도
-  if (typeof content === 'object') {
-    try {
-      content = JSON.stringify(content);
-    } catch (e) {
-      content = String(content);
+  // 문자열로 변환 시도
+  let textContent = '';
+  
+  try {
+    if (typeof content === 'object') {
+      // JSON 객체인 경우 문자열로 변환
+      textContent = JSON.stringify(content);
+    } else if (typeof content === 'string') {
+      // 이미 문자열인 경우 그대로 사용
+      textContent = content;
+    } else {
+      // 기타 타입인 경우 String 생성자로 변환
+      textContent = String(content);
     }
+  } catch (error) {
+    console.error('Rich text 변환 오류:', error);
+    // 오류 발생 시 안전하게 빈 문자열 사용
+    textContent = String(content) || '';
   }
   
-  // 문자열이 아닌 경우 변환
-  if (typeof content !== 'string') {
-    content = String(content);
+  // 특수 문자나 이스케이프 문자로 인한 JSON 파싱 오류 방지
+  try {
+    // 역슬래시나 따옴표 같은 특수 문자 처리
+    textContent = textContent.replace(/\\"/g, '"')
+                             .replace(/\\\\/g, '\\')
+                             .replace(/[\u0000-\u001F\u007F-\u009F]/g, ''); // 제어 문자 제거
+  } catch (e) {
+    console.error('문자열 정리 중 오류:', e);
   }
   
   // 노션 API 텍스트 제한 (2000자)
-  const truncated = truncateText(content);
+  const truncated = truncateText(textContent);
   return [{ text: { content: truncated } }];
 }
 
@@ -153,6 +217,23 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
     const titleMatch = draft.draft_post.match(/🚀 AI 및 LLM 트렌드 \((.*?)\)\n\n/);
     const title = titleMatch ? titleMatch[1] : new Date().toLocaleDateString();
     
+    // Notion 데이터베이스 스키마 확인 시도
+    try {
+      const databaseId = process.env.NOTION_DATABASE_ID || '';
+      console.log(`Notion 데이터베이스 확인 시도 (ID: ${databaseId})`);
+      
+      const { properties } = await notion.databases.retrieve({
+        database_id: databaseId
+      });
+      
+      console.log('Notion 데이터베이스 필드 목록:');
+      Object.keys(properties).forEach(propertyName => {
+        console.log(`- ${propertyName} (${properties[propertyName].type})`);
+      });
+    } catch (schemaError) {
+      console.error('Notion 데이터베이스 스키마 확인 실패:', schemaError);
+    }
+    
     // 번역된 콘텐츠 항목들 사용
     for (const item of draft.translatedContent) {
       if (!item.translated && !item.original) continue;
@@ -171,57 +252,76 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
       // 링크 추가
       blocks.push(createParagraphBlock(item.link || '', item.link));
       
-      await notion.pages.create({
-        parent: {
-          database_id: process.env.NOTION_DATABASE_ID || '',
-        },
-        properties: {
-          Title: {
-            title: [
-              {
-                text: {
-                  content: typeof item.title_ko === 'string' 
-                    ? item.title_ko 
-                    : typeof item.title_ko === 'object' && item.title_ko?.text 
-                      ? String(item.title_ko.text) 
-                      : typeof item.translated === 'string' 
-                        ? item.translated 
-                        : String(item.original || '무제'),
+      // 노션에 페이지 생성 요청 전 로깅
+      console.log(`Notion에 페이지 생성 중: ${typeof item.title_ko === 'string' ? item.title_ko : '무제'}`);
+      
+      // 실제 전송될 항목의 요약 정보 로깅
+      console.log(`Summary_ko 내용 길이: ${(item.summary_ko || '').length}바이트`);
+      console.log(`content_full_kr 내용 길이: ${(item.content_full_kr || '').length}바이트`);
+      
+      try {
+        await notion.pages.create({
+          parent: {
+            database_id: process.env.NOTION_DATABASE_ID || '',
+          },
+          properties: {
+            Title: {
+              title: [
+                {
+                  text: {
+                    content: typeof item.title_ko === 'string' 
+                      ? item.title_ko 
+                      : typeof item.title_ko === 'object' && item.title_ko?.text 
+                        ? String(item.title_ko.text) 
+                        : typeof item.translated === 'string' 
+                          ? item.translated 
+                          : String(item.original || '무제'),
+                  },
                 },
-              },
-            ],
-          },
-          Date: {
-            date: {
-              start: new Date().toISOString().split('T')[0],
+              ],
             },
-          },
-          Content_kr: {
-            rich_text: createRichText(item.description_ko || '')
-          },
-          URL: {
-            url: item.link || null,
-          },
-          Category: {
-            select: {
-              name: getCategoryFromContent(item.category, item.translated || item.original)
+            Date: {
+              date: {
+                start: new Date().toISOString().split('T')[0],
+              },
+            },
+            Summary_kr: {
+              rich_text: createRichText(item.summary_ko || '')
+            },
+            URL: {
+              url: item.link || null,
+            },
+            Category: {
+              select: {
+                name: getCategoryFromContent(item.category, item.translated || item.original)
+              }
+            },
+            Content_full: {
+              rich_text: createRichText(truncateText(await getFullContent(item)))
+            },
+            Content_full_kr: {
+              rich_text: createRichText(truncateText(item.content_full_kr || item.translated || ''))
+            },
+            Image_URL: {
+              url: getValidUrlFromArray(item.image_url, "https://example.com/placeholder-image.jpg")
+            },
+            Video_URL: {
+              url: getValidUrlFromArray(item.video_url, "https://example.com/placeholder-video.mp4")
             }
           },
-          Content_full: {
-            rich_text: createRichText(truncateText(item.content_full))
-          },
-          Content_full_kr: {
-            rich_text: createRichText(truncateText(item.content_full_kr))
-          },
-          Image_URL: {
-            url: getValidUrlFromArray(item.image_url, "https://example.com/placeholder-image.jpg")
-          },
-          Video_URL: {
-            url: getValidUrlFromArray(item.video_url, "https://example.com/placeholder-video.mp4")
-          }
-        },
-        children: blocks,
-      });
+          children: blocks,
+        });
+        
+        console.log(`페이지 생성 성공: ${typeof item.title_ko === 'string' ? item.title_ko : '무제'}`);
+      } catch (pageError) {
+        console.error('Notion 페이지 생성 실패:', pageError);
+        console.error('오류 발생한 항목:', JSON.stringify({
+          title: item.title_ko,
+          summary: (item.summary_ko || '').substring(0, 50) + '...',
+          link: item.link
+        }));
+        throw pageError;
+      }
     }
 
     return `Success sending ${draft.translatedContent.length} trends to Notion at ${new Date().toISOString()}`;

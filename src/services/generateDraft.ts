@@ -1,11 +1,9 @@
 import OpenAI from "openai";
 import dotenv from "dotenv";
-import { ApiCache, withCache, getCacheItem, setCacheItem } from "../utils/apiCache";
 import NodeCache from 'node-cache';
-import { retry as withRetry, RetryConfig } from 'ts-retry-promise';
-import { z } from 'zod';
-import axios from 'axios';
+import { retry as withRetry } from 'ts-retry-promise';
 import type { Story } from './scrapeSources';
+import { retrieveFullContent } from './contentStorage';
 
 dotenv.config();
 
@@ -15,17 +13,21 @@ const cache = new NodeCache({ stdTTL: 24 * 60 * 60 }); // 24시간 캐시
 /**
  * OpenAI API를 사용하여 텍스트를 번역합니다.
  */
-async function translateTextCore(
-  openai: OpenAI,
+async function translateText(
   text: string,
-  model: string,
-  isTitle: boolean = false
+  isTitle: boolean = false,
+  openai?: OpenAI
 ): Promise<string> {
   if (!text || text.trim() === "") {
     return "";
   }
 
   try {
+    // OpenAI 클라이언트가 없으면 생성
+    if (!openai) {
+      openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    }
+
     // 제목인 경우 간단한 번역 요청
     if (isTitle) {
       const titleResponse = await openai.chat.completions.create({
@@ -57,7 +59,7 @@ async function translateTextCore(
     // 본문인 경우 마크다운 요소를 유지하며 번역
     else {
       const contentResponse = await openai.chat.completions.create({
-        model: model,
+        model: "gpt-4o",
         temperature: 0.3,
         max_tokens: 4000,
         response_format: { type: "json_object" },
@@ -94,23 +96,25 @@ async function translateTextCore(
   return text; // 오류 발생 시 원본 반환
 }
 
-// 캐싱을 적용한 번역 함수
-const translateText = withCache(translateTextCore, 'translateText', 24 * 60 * 60 * 1000); // 24시간 캐시
-
 /**
- * 텍스트를 불렛포인트로 요약합니다 (이미 번역된 텍스트일 수 있음).
+ * 텍스트를 불렛포인트로 요약합니다.
  */
-async function createBulletPointSummaryCore(
-  openai: OpenAI,
+async function createBulletPointSummary(
   text: string,
   model: string,
-  alreadyTranslated: boolean = true
+  alreadyTranslated: boolean = true,
+  openai?: OpenAI
 ): Promise<string> {
   if (!text || text.trim() === "") {
     return "";
   }
   
   try {
+    // OpenAI 클라이언트가 없으면 생성
+    if (!openai) {
+      openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    }
+    
     console.log(`Creating bullet point summary (${alreadyTranslated ? "already translated" : "needs translation"})`);
     
     const systemPrompt = alreadyTranslated
@@ -156,15 +160,24 @@ async function createBulletPointSummaryCore(
       try {
         const bulletData = JSON.parse(bulletContent);
         if (Array.isArray(bulletData.bullet_points) && bulletData.bullet_points.length > 0) {
-          // 불렛포인트 형식으로 변환
+          // 불렛포인트 형식으로 변환 (각 항목 사이에 빈 줄 추가)
           return bulletData.bullet_points.map((point: string) => `• ${point}`).join('\n\n');
         }
       } catch (parseError) {
         console.error("Error parsing bullet point summary response:", parseError);
+        
+        // JSON 파싱 실패 시 정규식으로 추출 시도
+        if (bulletContent.includes('bullet_points')) {
+          const points = bulletContent.match(/"[^"]+"/g);
+          if (points && points.length > 0) {
+            return points.map(p => `• ${p.replace(/"/g, '')}`).join('\n\n');
+          }
+        }
       }
     } else {
-      // 이미 불렛포인트 형식으로 응답된 경우 그대로 반환
-      return bulletContent;
+      // 이미 불렛포인트 형식으로 응답된 경우
+      // 각 불렛포인트 항목 사이에 빈 줄 추가
+      return bulletContent.replace(/\n• /g, '\n\n• ');
     }
   } catch (error) {
     console.error("Error creating bullet point summary:", error);
@@ -173,59 +186,113 @@ async function createBulletPointSummaryCore(
   return "요약을 생성할 수 없습니다.";
 }
 
-// 캐싱을 적용한 불렛포인트 요약 함수
-const createBulletPointSummary = withCache(createBulletPointSummaryCore, 'bulletPointSummary', 24 * 60 * 60 * 1000);
-
 /**
  * 한국어 텍스트를 3-4문장으로 간략하게 요약합니다.
  */
-async function createBriefSummaryCore(
-  openai: OpenAI,
+async function createBriefSummary(
   text: string,
-  model: string
+  model: string,
+  openai?: OpenAI
 ): Promise<string> {
   if (!text || text.trim() === "") {
     return "";
   }
   
   try {
+    // OpenAI 클라이언트가 없으면 생성
+    if (!openai) {
+      openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    }
+    
     console.log("Creating brief summary...");
-    const summaryCompletion = await openai.chat.completions.create({
+    
+    // 텍스트가 너무 길면 앞부분만 사용
+    const truncatedText = text.substring(0, 6000);
+    console.log(`요약할 텍스트 길이: ${truncatedText.length}바이트`);
+    
+    // 첫 번째 시도: JSON 형식으로 요약 요청
+    try {
+      const summaryCompletion = await openai.chat.completions.create({
+        model: model,
+        temperature: 0.5,
+        max_tokens: 500,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: "한국어로 된 텍스트를 3-4개의 문장으로 요약하세요. 핵심 내용을 정확하고 자세하게 포함해야 합니다. JSON 형식으로 응답하되, 'summary' 필드에 요약된 내용을 포함하세요."
+          },
+          {
+            role: "user",
+            content: `다음 한국어 텍스트를 3-4문장으로 요약하세요:\n\n${truncatedText}`
+          }
+        ]
+      });
+      
+      // 요약 결과 파싱
+      const summaryContent = summaryCompletion.choices[0].message.content;
+      if (summaryContent) {
+        try {
+          const summaryData = JSON.parse(summaryContent);
+          if (summaryData.summary && summaryData.summary.trim() !== "") {
+            console.log(`요약 성공: ${summaryData.summary.length}바이트`);
+            return summaryData.summary;
+          } else {
+            console.warn("JSON에서 summary 필드가 비어있거나 존재하지 않습니다.");
+          }
+        } catch (parseError) {
+          console.error("Error parsing summary response:", parseError);
+          // JSON 파싱 실패 시 원본 텍스트에서 직접 추출 시도
+          if (summaryContent.includes('summary')) {
+            const summaryMatch = summaryContent.match(/"summary"\s*:\s*"([^"]+)"/);
+            if (summaryMatch && summaryMatch[1]) {
+              console.log(`JSON 파싱 실패했지만 정규식으로 요약을 추출했습니다.`);
+              return summaryMatch[1];
+            }
+          }
+        }
+      }
+    } catch (firstAttemptError) {
+      console.error("First summary attempt failed:", firstAttemptError);
+    }
+    
+    // 첫 번째 시도가 실패한 경우, 두 번째 방식으로 요약 시도 (일반 텍스트 형식)
+    console.log("첫 번째 요약 시도 실패, 두 번째 방식으로 시도 중...");
+    const secondAttempt = await openai.chat.completions.create({
       model: model,
-      temperature: 0.5,
+      temperature: 0.3,
       max_tokens: 500,
-      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
-          content: "한국어로 된 텍스트를 3-4개의 문장으로 요약하세요. 핵심 내용을 정확하고 자세하게 포함해야 합니다. JSON 형식으로 응답하되, 'summary' 필드에 요약된 내용을 포함하세요."
+          content: "한국어로 된 텍스트를 3-4개의 문장으로 요약하세요. 핵심 내용을 정확하고 자세하게 포함해야 합니다. 특별한 형식 없이 직접 요약 텍스트만 제공하세요."
         },
         {
           role: "user",
-          content: `다음 한국어 텍스트를 3-4문장으로 요약하세요:\n\n${text.substring(0, 6000)}`
+          content: `다음 한국어 텍스트를 3-4문장으로 요약하세요. 요약만 제공하고 다른 설명은 포함하지 마세요:\n\n${truncatedText}`
         }
       ]
     });
     
-    // 요약 결과 파싱
-    const summaryContent = summaryCompletion.choices[0].message.content;
-    if (summaryContent) {
-      try {
-        const summaryData = JSON.parse(summaryContent);
-        return summaryData.summary || "";
-      } catch (parseError) {
-        console.error("Error parsing summary response:", parseError);
-      }
+    const plainSummary = secondAttempt.choices[0].message.content?.trim();
+    if (plainSummary) {
+      console.log(`두 번째 방식으로 요약 성공: ${plainSummary.length}바이트`);
+      return plainSummary;
     }
   } catch (error) {
     console.error("Error creating brief summary:", error);
   }
   
+  // 모든 방법이 실패한 경우, 원본 텍스트의 첫 부분 잘라서 반환
+  console.warn("모든 요약 시도 실패, 원본 텍스트 앞부분을 사용합니다.");
+  const sentences = text.split(/[.!?] /).filter(s => s.trim() !== '');
+  if (sentences.length >= 3) {
+    const fallbackSummary = sentences.slice(0, 3).join('. ') + '.';
+    return fallbackSummary;
+  }
+  
   return "요약을 생성할 수 없습니다.";
 }
-
-// 캐싱을 적용한 간략 요약 함수
-const createBriefSummary = withCache(createBriefSummaryCore, 'briefSummary', 24 * 60 * 60 * 1000);
 
 /**
  * Process a batch of translations using OpenAI
@@ -312,7 +379,7 @@ async function processBatchTranslations(
             },
             {
               retries: 3,
-              timeout: 10000, // minTimeout, maxTimeout 대신 timeout 사용
+              timeout: 10000,
             }
           );
 
@@ -338,309 +405,6 @@ async function processBatchTranslations(
   } catch (error) {
     console.error("Error in batch translation process:", error);
     throw error;
-  }
-}
-
-/**
- * 여러 텍스트에 대한 불렛포인트 요약을 배치로 처리
- */
-async function processBatchBulletPointSummaries(
-  openai: OpenAI,
-  items: { text: string; isTranslated: boolean }[],
-  model: string
-): Promise<string[]> {
-  // 캐시된 항목 확인 및 처리
-  const results: string[] = [];
-  const uncachedItems: { index: number; text: string; isTranslated: boolean }[] = [];
-  
-  for (let i = 0; i < items.length; i++) {
-    const { text, isTranslated } = items[i];
-    const cacheKey = `bulletPointSummary:${JSON.stringify([openai, text, model, isTranslated])}`;
-    const cachedResult = getCacheItem<string>(cacheKey);
-    
-    if (cachedResult !== undefined) {
-      results[i] = cachedResult as string;
-      console.log(`[캐시 적중] 불렛포인트 요약 #${i}`);
-    } else {
-      results[i] = ""; // 임시 빈 값
-      uncachedItems.push({ index: i, text, isTranslated });
-    }
-  }
-  
-  // 캐시되지 않은 항목 병렬 처리
-  if (uncachedItems.length > 0) {
-    const summaryPromises = uncachedItems.map(async (item) => {
-      const summary = await createBulletPointSummaryCore(openai, item.text, model, item.isTranslated);
-      results[item.index] = summary;
-      
-      // 캐시에 저장
-      const itemCacheKey = `bulletPointSummary:${JSON.stringify([openai, item.text, model, item.isTranslated])}`;
-      setCacheItem(itemCacheKey, summary, 24 * 60 * 60 * 1000);
-    });
-    
-    await Promise.all(summaryPromises);
-  }
-  
-  return results;
-}
-
-/**
- * 여러 텍스트에 대한 간략 요약을 배치로 처리
- */
-async function processBatchBriefSummaries(
-  openai: OpenAI, 
-  texts: string[], 
-  model: string
-): Promise<string[]> {
-  // 캐시된 항목 확인 및 처리
-  const results: string[] = [];
-  const uncachedItems: { index: number; text: string }[] = [];
-  
-  for (let i = 0; i < texts.length; i++) {
-    const text = texts[i];
-    const cacheKey = `briefSummary:${JSON.stringify([openai, text, model])}`;
-    const cachedResult = getCacheItem<string>(cacheKey);
-    
-    if (cachedResult !== undefined) {
-      results[i] = cachedResult as string;
-      console.log(`[캐시 적중] 간략 요약 #${i}`);
-    } else {
-      results[i] = ""; // 임시 빈 값
-      uncachedItems.push({ index: i, text });
-    }
-  }
-  
-  // 캐시되지 않은 항목 병렬 처리
-  if (uncachedItems.length > 0) {
-    const summaryPromises = uncachedItems.map(async (item) => {
-      const summary = await createBriefSummaryCore(openai, item.text, model);
-      results[item.index] = summary;
-      
-      // 캐시에 저장
-      const itemCacheKey = `briefSummary:${JSON.stringify([openai, item.text, model])}`;
-      setCacheItem(itemCacheKey, summary, 24 * 60 * 60 * 1000);
-    });
-    
-    await Promise.all(summaryPromises);
-  }
-  
-  return results;
-}
-
-/**
- * 원시 스토리 데이터를 가져와 정리하고 번역하여 최종 드래프트를 생성합니다.
- */
-export async function generateDraft(rawStories: string) {
-  try {
-    // 온도 설정 및 API 키 설정
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
-    
-    // 모델 설정
-    const model = "gpt-4o";
-    
-    // 현재 날짜와 시간 (KST)
-    const now = new Date();
-    const kstDate = new Intl.DateTimeFormat('ko-KR', {
-      timeZone: 'Asia/Seoul',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
-    }).format(now);
-    
-    // 헤더
-    const header = `🚀 AI 및 LLM 트렌드 (${kstDate})\n\n`;
-    
-    // 원시 스토리 JSON 파싱
-    let stories = [];
-    
-    try {
-      // JSON 구문 분석 오류를 피하기 위해 잘린 URL 및 문자열 처리
-      const fixedJsonStr = fixBrokenUrls(rawStories);
-      stories = JSON.parse(fixedJsonStr);
-      
-      if (!Array.isArray(stories)) {
-        console.warn(`Stories is not an array, received:`, typeof stories);
-        
-        // 객체인 경우 stories 속성을 확인
-        if (stories && typeof stories === "object" && Array.isArray(stories.stories)) {
-          stories = stories.stories;
-        } else {
-          throw new Error("Invalid stories data format");
-        }
-      }
-    } catch (parseError) {
-      console.error("Error parsing raw stories:", parseError);
-      
-      // 일부라도 JSON을 추출 시도
-      try {
-        const jsonStartIdx = rawStories.indexOf('{');
-        const jsonEndIdx = rawStories.lastIndexOf('}') + 1;
-        
-        if (jsonStartIdx >= 0 && jsonEndIdx > jsonStartIdx) {
-          const jsonSubstr = rawStories.substring(jsonStartIdx, jsonEndIdx);
-          const emergency = createEmergencyResponse(jsonSubstr);
-          
-          if (emergency && Array.isArray(emergency.interestingTweetsOrStories)) {
-            stories = emergency.interestingTweetsOrStories;
-          }
-        }
-      } catch (emergencyError) {
-        console.error("Failed emergency parsing:", emergencyError);
-        return {
-          draft_post: header + "JSON 파싱에 실패했습니다. API 응답을 확인해주세요.",
-          translatedContent: []
-        };
-      }
-    }
-    
-    // 스토리가 없거나 유효하지 않은 경우 처리
-    if (!stories || stories.length === 0) {
-      return {
-        draft_post: header + "처리할 스토리가 없습니다.",
-        translatedContent: []
-      };
-    }
-    
-    console.log(`Found ${stories.length} stories to process`);
-    
-    // 배치 처리를 위한 준비
-    const titleTranslationItems: { text: string; isTitle: boolean }[] = [];
-    const contentTranslationItems: { text: string; isTitle: boolean }[] = [];
-    
-    // 타입 안전성을 위한 기본값 설정 및 배치 처리 준비
-    stories.forEach((story: any, index: number) => {
-      // 기본값 설정
-      story.headline = story.headline || '제목 없음';
-      story.fullContent = story.fullContent || '';
-      story.imageUrls = story.imageUrls || [];
-      story.videoUrls = story.videoUrls || [];
-      story.link = story.link || '';
-      
-      // 카테고리 지정
-      const headline = story.headline || "";
-      story.category = headline.toLowerCase().includes("research") || 
-                       headline.toLowerCase().includes("paper") ? 
-                       "연구 동향" : "모델 업데이트";
-      
-      // 번역 배치 처리를 위한 아이템 추가
-      if (headline) {
-        titleTranslationItems.push({ text: headline, isTitle: true });
-      }
-      
-      if (story.fullContent && story.fullContent.trim() !== "") {
-        contentTranslationItems.push({ text: story.fullContent, isTitle: false });
-      }
-    });
-    
-    // 배치 번역 처리
-    console.log(`배치 처리 시작: ${titleTranslationItems.length} 제목, ${contentTranslationItems.length} 본문`);
-    
-    // 제목 번역 배치 처리
-    const titleTranslations = await processBatchTranslations(titleTranslationItems, "한국어로 번역해주세요.");
-    
-    // 본문 번역 배치 처리
-    const contentTranslations = await processBatchTranslations(contentTranslationItems, "한국어로 번역해주세요.");
-    
-    // 번역 결과 스토리에 할당
-    let titleIndex = 0;
-    let contentIndex = 0;
-    
-    for (const story of stories) {
-      if (story.headline) {
-        story.title_ko = titleTranslations[titleIndex++];
-      } else {
-        story.title_ko = "제목 없음";
-      }
-      
-      if (story.fullContent && story.fullContent.trim() !== "") {
-        story.fullContent_ko = contentTranslations[contentIndex++];
-      } else {
-        story.fullContent_ko = "";
-      }
-    }
-    
-    // 요약 배치 처리 준비
-    const briefSummaryItems: string[] = [];
-    const bulletPointItems: { text: string; isTranslated: boolean }[] = [];
-    
-    // 요약이 필요한 항목 추가
-    for (const story of stories) {
-      // story.fullContent_ko가 문자열인지 확인
-      const fullContentKo = typeof story.fullContent_ko === 'string' ? story.fullContent_ko : '';
-      
-      if (fullContentKo && fullContentKo.trim() !== "") {
-        briefSummaryItems.push(fullContentKo);
-        bulletPointItems.push({ 
-          text: typeof story.fullContent === 'string' ? story.fullContent : '', 
-          isTranslated: false 
-        });
-      }
-    }
-    
-    // 배치 요약 처리
-    const briefSummaries = await processBatchBriefSummaries(openai, briefSummaryItems, model);
-    const bulletPointSummaries = await processBatchBulletPointSummaries(openai, bulletPointItems, model);
-    
-    // 요약 결과 스토리에 할당
-    let briefIndex = 0;
-    let bulletIndex = 0;
-    
-    for (const story of stories) {
-      // story.fullContent_ko가 문자열인지 확인
-      const fullContentKo = typeof story.fullContent_ko === 'string' ? story.fullContent_ko : '';
-      
-      if (fullContentKo && fullContentKo.trim() !== "") {
-        story.description_ko = briefSummaries[briefIndex++];
-        story.content_full_kr = bulletPointSummaries[bulletIndex++];
-      } else {
-        story.description_ko = "내용 요약을 생성할 수 없습니다.";
-        story.content_full_kr = "";
-      }
-    }
-    
-    // 최종 결과 생성
-    console.log(`모든 스토리 처리 완료: ${stories.length}개`);
-    
-    // 스토리가 없는 경우 처리
-    if (stories.length === 0) {
-      return {
-        draft_post: header + "현재 트렌딩 중인 이야기나 트윗이 발견되지 않았습니다.",
-        translatedContent: []
-      };
-    }
-
-    // Draft 포스트 빌드
-    const draft_post =
-      header +
-      stories
-        .map((story: any) => `• ${story.description_ko}\n  ${story.link}`)
-        .join("\n\n");
-
-    // Notion에 보낼 항목 생성
-    const translatedContent = stories.map((item: any) => ({
-      title_ko: item.title_ko,
-      translated: item.description_ko,
-      link: item.link,
-      category: item.category || "연구 동향",
-      content_full: item.fullContent || "",
-      content_full_ko: item.fullContent_ko || "",
-      content_full_kr: item.content_full_kr || "",
-      image_url: item.imageUrls || [],
-      video_url: item.videoUrls || []
-    }));
-
-    return { 
-      draft_post, 
-      translatedContent
-    };
-  } catch (error) {
-    console.error("Error generating draft post", error);
-    return { 
-      draft_post: "Error generating draft post.",
-      translatedContent: []
-    };
   }
 }
 
@@ -672,7 +436,7 @@ function createEmergencyResponse(rawText: string): any {
     const emergency = {
       interestingTweetsOrStories: [
         {
-          description_ko: "OpenAI 응답에서 유효한 JSON을 파싱할 수 없었습니다. API 응답 형식에 문제가 있습니다.",
+          summary_ko: "OpenAI 응답에서 유효한 JSON을 파싱할 수 없었습니다. API 응답 형식에 문제가 있습니다.",
           title_ko: "JSON 파싱 오류",
           story_or_tweet_link: "https://help.openai.com",
           category: "개발자 도구",
@@ -685,7 +449,7 @@ function createEmergencyResponse(rawText: string): any {
     };
     
     // 원시 응답에서 가능한 데이터 추출 시도
-    const descriptionKoMatch = /"description_ko"\s*:\s*"(.*?)(?:"|$)/g.exec(rawText);
+    const descriptionKoMatch = /"summary_ko"\s*:\s*"(.*?)(?:"|$)/g.exec(rawText);
     const titleKoMatch = /"title_ko"\s*:\s*"(.*?)(?:"|$)/g.exec(rawText);
     const linkMatch = /"story_or_tweet_link"\s*:\s*"(.*?)(?:"|$)/g.exec(rawText);
     const categoryMatch = /"category"\s*:\s*"(.*?)(?:"|$)/g.exec(rawText);
@@ -720,7 +484,7 @@ function createEmergencyResponse(rawText: string): any {
     
     // 추출된 데이터가 있으면 응급 객체에 추가
     if (descriptionKoMatch && descriptionKoMatch[1]) {
-      emergency.interestingTweetsOrStories[0].description_ko = descriptionKoMatch[1];
+      emergency.interestingTweetsOrStories[0].summary_ko = descriptionKoMatch[1];
     }
     
     if (titleKoMatch && titleKoMatch[1]) {
@@ -764,7 +528,7 @@ function createEmergencyResponse(rawText: string): any {
     return {
       interestingTweetsOrStories: [
         {
-          description_ko: "OpenAI 응답 처리 중 오류가 발생했습니다.",
+          summary_ko: "OpenAI 응답 처리 중 오류가 발생했습니다.",
           title_ko: "응답 처리 오류",
           story_or_tweet_link: "https://www.example.com",
           category: "개발자 도구",
@@ -776,4 +540,357 @@ function createEmergencyResponse(rawText: string): any {
       ]
     };
   }
+}
+
+/**
+ * 원시 스토리 데이터를 가져와 정리하고 번역하여 최종 드래프트를 생성합니다.
+ */
+export async function generateDraft(rawStories: string) {
+  try {
+    // OpenAI 클라이언트 초기화
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+    
+    // 모델 설정
+    const model = "gpt-4o";
+    
+    // 현재 날짜와 시간 (KST)
+    const now = new Date();
+    const kstDate = new Intl.DateTimeFormat('ko-KR', {
+      timeZone: 'Asia/Seoul',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    }).format(now);
+    
+    // 헤더
+    const header = `🚀 AI 및 LLM 트렌드 (${kstDate})\n\n`;
+    
+    // 원시 스토리 JSON 파싱
+    let stories = parseRawStories(rawStories);
+    
+    // 스토리가 없거나 유효하지 않은 경우 처리
+    if (!stories || stories.length === 0) {
+      return {
+        draft_post: header + "처리할 스토리가 없습니다.",
+        translatedContent: []
+      };
+    }
+    
+    console.log(`Found ${stories.length} stories to process`);
+    
+    // 스토리 전처리 및 기본값 설정
+    stories = prepareStories(stories);
+    
+    // 개선된 워크플로우: Supabase → 번역 → 요약
+    console.log("1. Supabase에서 전체 콘텐츠 가져오기");
+    // Supabase에서 콘텐츠 가져오기 (ID로 조회)
+    for (const story of stories) {
+      if (story.id) {
+        try {
+          console.log(`Supabase에서 스토리 가져오기 시도 (ID: ${story.id})`);
+          const contentFromStorage = await retrieveFullContent(story.id);
+          if (contentFromStorage) {
+            console.log(`Supabase에서 콘텐츠 가져오기 성공 (${contentFromStorage.length} 바이트)`);
+            // 원본 콘텐츠 갱신
+            story.fullContent = contentFromStorage;
+            // 스토리지 ID 설정
+            story.content_storage_id = story.id;
+            story.content_storage_method = 'database';
+          } else {
+            console.log(`Supabase에서 콘텐츠를 찾지 못했습니다. 기존 콘텐츠 사용.`);
+          }
+        } catch (error) {
+          console.error(`Supabase에서 콘텐츠 가져오기 오류:`, error);
+        }
+      }
+    }
+    
+    // 번역을 위한 아이템 준비
+    console.log("2. 콘텐츠 번역 준비");
+    const { titleItems, contentItems } = prepareTranslationItems(stories);
+    
+    // 배치 번역 처리
+    console.log(`배치 번역 시작: ${titleItems.length} 제목, ${contentItems.length} 본문`);
+    
+    // 제목 및 콘텐츠 번역 결과 적용
+    await applyTranslations(stories, titleItems, contentItems);
+    
+    // 요약 배치 처리 (번역된 콘텐츠 기반)
+    console.log("3. 번역된 콘텐츠 기반으로 요약 생성");
+    const { briefSummaries, bulletPointSummaries } = await processSummaries(openai, stories, model);
+    
+    // 요약 결과 스토리에 할당
+    applySummaries(stories, briefSummaries, bulletPointSummaries);
+    
+    // 최종 결과 생성
+    console.log(`모든 스토리 처리 완료: ${stories.length}개`);
+    
+    // 스토리가 없는 경우 처리
+    if (stories.length === 0) {
+      return {
+        draft_post: header + "현재 트렌딩 중인 이야기나 트윗이 발견되지 않았습니다.",
+        translatedContent: []
+      };
+    }
+
+    // Draft 포스트 빌드
+    const draft_post = buildDraftPost(header, stories);
+
+    // Notion에 보낼 항목 생성
+    const translatedContent = prepareTranslatedContent(stories);
+
+    return { 
+      draft_post, 
+      translatedContent
+    };
+  } catch (error) {
+    console.error("Error generating draft post", error);
+    return { 
+      draft_post: "Error generating draft post.",
+      translatedContent: []
+    };
+  }
+}
+
+/**
+ * 원시 스토리 데이터를 파싱합니다.
+ */
+function parseRawStories(rawStories: string): any[] {
+  let stories = [];
+  
+  try {
+    // JSON 구문 분석 오류를 피하기 위해 잘린 URL 및 문자열 처리
+    const fixedJsonStr = fixBrokenUrls(rawStories);
+    stories = JSON.parse(fixedJsonStr);
+    
+    if (!Array.isArray(stories)) {
+      console.warn(`Stories is not an array, received:`, typeof stories);
+      
+      // 객체인 경우 stories 속성을 확인
+      if (stories && typeof stories === "object" && Array.isArray(stories.stories)) {
+        stories = stories.stories;
+      } else {
+        throw new Error("Invalid stories data format");
+      }
+    }
+  } catch (parseError) {
+    console.error("Error parsing raw stories:", parseError);
+    
+    // 일부라도 JSON을 추출 시도
+    try {
+      const jsonStartIdx = rawStories.indexOf('{');
+      const jsonEndIdx = rawStories.lastIndexOf('}') + 1;
+      
+      if (jsonStartIdx >= 0 && jsonEndIdx > jsonStartIdx) {
+        const jsonSubstr = rawStories.substring(jsonStartIdx, jsonEndIdx);
+        const emergency = createEmergencyResponse(jsonSubstr);
+        
+        if (emergency && Array.isArray(emergency.interestingTweetsOrStories)) {
+          stories = emergency.interestingTweetsOrStories;
+        }
+      }
+    } catch (emergencyError) {
+      console.error("Failed emergency parsing:", emergencyError);
+      stories = [];
+    }
+  }
+  
+  return stories;
+}
+
+/**
+ * 스토리를 전처리하여 기본값을 설정합니다.
+ */
+function prepareStories(stories: any[]): any[] {
+  return stories.map(story => {
+    // 기본값 설정
+    story.headline = story.headline || '제목 없음';
+    story.fullContent = story.fullContent || '';
+    story.imageUrls = story.imageUrls || [];
+    story.videoUrls = story.videoUrls || [];
+    story.link = story.link || '';
+    
+    // 카테고리 지정
+    const headline = story.headline || "";
+    story.category = headline.toLowerCase().includes("research") || 
+                     headline.toLowerCase().includes("paper") ? 
+                     "연구 동향" : "모델 업데이트";
+    
+    return story;
+  });
+}
+
+/**
+ * 번역 아이템을 준비합니다.
+ */
+function prepareTranslationItems(stories: any[]) {
+  const titleItems: any[] = [];
+  const contentItems: any[] = [];
+  
+  stories.forEach(story => {
+    if (story.headline) {
+      titleItems.push(story.headline);
+    }
+    
+    if (story.fullContent && story.fullContent.trim() !== "") {
+      contentItems.push(story.fullContent);
+    }
+  });
+  
+  return { titleItems, contentItems };
+}
+
+/**
+ * 번역 결과를 스토리에 적용합니다.
+ */
+async function applyTranslations(stories: any[], titleItems: any[], contentItems: any[]) {
+  // OpenAI 객체 생성
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  
+  // 번역 진행
+  const translatedTitles = await Promise.all(
+    titleItems.map(title => translateText(title, true, openai))
+  );
+  
+  const translatedContents = await Promise.all(
+    contentItems.map(content => translateText(content, false, openai))
+  );
+  
+  // 번역 결과 적용
+  let titleIndex = 0;
+  let contentIndex = 0;
+  
+  for (const story of stories) {
+    if (story.headline) {
+      story.title_ko = translatedTitles[titleIndex++];
+    } else {
+      story.title_ko = "제목 없음";
+    }
+    
+    if (story.fullContent && story.fullContent.trim() !== "") {
+      story.fullContent_ko = translatedContents[contentIndex++];
+    } else {
+      story.fullContent_ko = "";
+    }
+  }
+}
+
+/**
+ * 요약을 처리합니다.
+ */
+async function processSummaries(openai: OpenAI, stories: any[], model: string) {
+  // 요약 배치 처리 준비
+  const briefSummaryItems: string[] = [];
+  const bulletPointItems: { text: string; isTranslated: boolean }[] = [];
+  
+  // 요약이 필요한 항목 추가
+  for (const story of stories) {
+    // story.fullContent_ko가 문자열인지 확인
+    const fullContentKo = typeof story.fullContent_ko === 'string' ? story.fullContent_ko : '';
+    
+    if (fullContentKo && fullContentKo.trim() !== "") {
+      briefSummaryItems.push(fullContentKo);
+      bulletPointItems.push({ 
+        text: typeof story.fullContent === 'string' ? story.fullContent : '', 
+        isTranslated: false 
+      });
+    }
+  }
+  
+  // 배치 요약 처리
+  const briefSummaries = await Promise.all(
+    briefSummaryItems.map(text => createBriefSummary(text, model, openai))
+  );
+  
+  const bulletPointSummaries = await Promise.all(
+    bulletPointItems.map(item => createBulletPointSummary(item.text, model, item.isTranslated, openai))
+  );
+  
+  return { briefSummaries, bulletPointSummaries };
+}
+
+/**
+ * 요약 결과를 스토리에 적용합니다.
+ */
+function applySummaries(stories: any[], briefSummaries: string[], bulletPointSummaries: string[]) {
+  let briefIndex = 0;
+  let bulletIndex = 0;
+  
+  for (const story of stories) {
+    // story.fullContent_ko가 문자열인지 확인
+    const fullContentKo = typeof story.fullContent_ko === 'string' ? story.fullContent_ko : '';
+    
+    if (fullContentKo && fullContentKo.trim() !== "") {
+      story.summary_ko = briefSummaries[briefIndex++];
+      story.content_full_kr = bulletPointSummaries[bulletIndex++];
+    } else {
+      story.summary_ko = "내용 요약을 생성할 수 없습니다.";
+      story.content_full_kr = "";
+    }
+  }
+}
+
+/**
+ * 최종 드래프트 포스트를 생성합니다.
+ */
+function buildDraftPost(header: string, stories: any[]): string {
+  return header + stories
+    .map((story: any) => `• ${story.summary_ko}\n  ${story.link}`)
+    .join("\n\n");
+}
+
+/**
+ * Notion에 전송할 번역된 콘텐츠를 준비합니다.
+ */
+function prepareTranslatedContent(stories: any[]) {
+  console.log(`번역된 콘텐츠 준비 중... (${stories.length}개 스토리)`);
+  
+  return stories.map((item: any, index: number) => {
+    // summary_ko가 없거나 비어있으면 대체 텍스트 생성
+    if (!item.summary_ko || item.summary_ko.trim() === '') {
+      console.warn(`스토리 #${index + 1}에 summary_ko가 없습니다: ${item.title_ko}`);
+      
+      // 대체값으로 fullContent_ko의 첫 부분 사용
+      if (item.fullContent_ko && item.fullContent_ko.trim() !== '') {
+        const sentences = item.fullContent_ko.split(/[.!?] /).filter((s: string) => s.trim() !== '');
+        if (sentences.length >= 3) {
+          item.summary_ko = sentences.slice(0, 3).join('. ') + '.';
+          console.log(`대체 요약 생성 (${item.summary_ko.length}바이트): ${item.summary_ko.substring(0, 50)}...`);
+        } else {
+          item.summary_ko = item.fullContent_ko.substring(0, 200) + '...';
+          console.log(`대체 요약 생성 (첫 200자): ${item.summary_ko.substring(0, 50)}...`);
+        }
+      } else {
+        // fullContent_ko도 없으면 title_ko 또는 원본 title 사용
+        item.summary_ko = item.title_ko || item.headline || "내용 요약을 생성할 수 없습니다.";
+        console.log(`대체 요약 생성 (제목 사용): ${item.summary_ko}`);
+      }
+    } else {
+      console.log(`스토리 #${index + 1} 요약 (${item.summary_ko.length}바이트): ${item.summary_ko.substring(0, 50)}...`);
+    }
+    
+    const processed = {
+      title_ko: item.title_ko,
+      translated: item.summary_ko, // summary_ko를 translated 필드에 할당
+      summary_ko: item.summary_ko, // summary_ko 필드도 명시적으로 추가
+      link: item.link,
+      category: item.category || "연구 동향",
+      content_full: item.fullContent || "",
+      content_full_ko: item.fullContent_ko || "",
+      content_full_kr: item.content_full_kr || "",
+      image_url: item.imageUrls || [],
+      video_url: item.videoUrls || [],
+      content_storage_id: item.content_storage_id || "",
+      content_storage_method: item.content_storage_method || ""
+    };
+    
+    // ID가 UUID 형식이면 content_storage_id에 할당
+    if (item.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.id)) {
+      processed.content_storage_id = item.id;
+    }
+    
+    return processed;
+  });
 }
