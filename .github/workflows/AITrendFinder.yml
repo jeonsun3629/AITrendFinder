@@ -8,6 +8,7 @@ on:
 jobs:
   find-trends:
     runs-on: ubuntu-latest
+    timeout-minutes: 15  # 최대 15분 후 작업 강제 종료
     steps:
       - name: 저장소 체크아웃
         uses: actions/checkout@v3
@@ -35,4 +36,9 @@ jobs:
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        run: node -r ts-node/register src/index.ts
+        run: |
+          node -r ts-node/register src/index.ts
+          # 프로세스 종료를 위해 exit 추가
+          echo "작업 완료, 프로세스 종료 중..."
+          sleep 5  # 5초 대기 후 종료 (남은 백그라운드 작업 완료 시간 확보)
+          exit 0

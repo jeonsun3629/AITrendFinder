@@ -845,52 +845,44 @@ function buildDraftPost(header: string, stories: any[]): string {
  * Notion에 전송할 번역된 콘텐츠를 준비합니다.
  */
 function prepareTranslatedContent(stories: any[]) {
-  console.log(`번역된 콘텐츠 준비 중... (${stories.length}개 스토리)`);
-  
   return stories.map((item: any, index: number) => {
     // summary_ko가 없거나 비어있으면 대체 텍스트 생성
     if (!item.summary_ko || item.summary_ko.trim() === '') {
       console.warn(`스토리 #${index + 1}에 summary_ko가 없습니다: ${item.title_ko}`);
       
-      // 대체값으로 fullContent_ko의 첫 부분 사용
-      if (item.fullContent_ko && item.fullContent_ko.trim() !== '') {
-        const sentences = item.fullContent_ko.split(/[.!?] /).filter((s: string) => s.trim() !== '');
-        if (sentences.length >= 3) {
+      // 1. 한국어 전체 콘텐츠에서 첫 문장 3개 추출 시도
+      if (item.fullContent_ko && item.fullContent_ko.length > 10) {
+        const sentences = item.fullContent_ko.split(/[.!?]/g).filter((s: string) => s.trim().length > 0);
+        if (sentences.length >= 2) {
           item.summary_ko = sentences.slice(0, 3).join('. ') + '.';
           console.log(`대체 요약 생성 (${item.summary_ko.length}바이트): ${item.summary_ko.substring(0, 50)}...`);
         } else {
           item.summary_ko = item.fullContent_ko.substring(0, 200) + '...';
           console.log(`대체 요약 생성 (첫 200자): ${item.summary_ko.substring(0, 50)}...`);
         }
-      } else {
-        // fullContent_ko도 없으면 title_ko 또는 원본 title 사용
+      } 
+      // 2. 제목을 요약으로 사용
+      else {
         item.summary_ko = item.title_ko || item.headline || "내용 요약을 생성할 수 없습니다.";
         console.log(`대체 요약 생성 (제목 사용): ${item.summary_ko}`);
       }
-    } else {
-      console.log(`스토리 #${index + 1} 요약 (${item.summary_ko.length}바이트): ${item.summary_ko.substring(0, 50)}...`);
     }
     
-    const processed = {
+    console.log(`스토리 #${index + 1} 요약 (${item.summary_ko.length}바이트): ${item.summary_ko.substring(0, 50)}...`);
+    
+    // Notion API를 위한 데이터 변환
+    return {
       title_ko: item.title_ko,
+      link: item.link,
       translated: item.summary_ko, // summary_ko를 translated 필드에 할당
       summary_ko: item.summary_ko, // summary_ko 필드도 명시적으로 추가
-      link: item.link,
-      category: item.category || "연구 동향",
-      content_full: item.fullContent || "",
-      content_full_ko: item.fullContent_ko || "",
-      content_full_kr: item.content_full_kr || "",
-      image_url: item.imageUrls || [],
-      video_url: item.videoUrls || [],
-      content_storage_id: item.content_storage_id || "",
-      content_storage_method: item.content_storage_method || ""
+      original: item.original,
+      fullContent_ko: item.fullContent_ko,
+      content_full_kr: item.fullContent_ko || item.translated || '', // content_full_kr 필드도 추가
+      category: item.category || '',
+      content_storage_id: item.content_storage_id,
+      image_url: item.image_url || [],
+      video_url: item.video_url || []
     };
-    
-    // ID가 UUID 형식이면 content_storage_id에 할당
-    if (item.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.id)) {
-      processed.content_storage_id = item.id;
-    }
-    
-    return processed;
   });
 }
