@@ -4,6 +4,7 @@ import NodeCache from 'node-cache';
 import { retry as withRetry } from 'ts-retry-promise';
 import type { Story } from './scrapeSources';
 import { retrieveFullContent } from './contentStorage';
+import { getCategoryFromContent } from './sendDraft';
 
 dotenv.config();
 
@@ -439,7 +440,7 @@ function createEmergencyResponse(rawText: string): any {
           summary_ko: "OpenAI 응답에서 유효한 JSON을 파싱할 수 없었습니다. API 응답 형식에 문제가 있습니다.",
           title_ko: "JSON 파싱 오류",
           story_or_tweet_link: "https://help.openai.com",
-          category: "개발자 도구",
+          category: getCategoryFromContent(undefined, "JSON 파싱 오류"),
           fullContent: "",
           fullContent_ko: "",
           imageUrls: [] as string[],
@@ -501,8 +502,19 @@ function createEmergencyResponse(rawText: string): any {
     if (categoryMatch && categoryMatch[1]) {
       const validCategories = ['모델 업데이트', '연구 동향', '시장 동향', '개발자 도구'];
       const category = categoryMatch[1];
-      emergency.interestingTweetsOrStories[0].category = 
-        validCategories.includes(category) ? category : "개발자 도구";
+      if (validCategories.includes(category)) {
+        emergency.interestingTweetsOrStories[0].category = category;
+      } else {
+        // 카테고리가 유효하지 않은 경우 내용을 기반으로 자동 분류
+        const extractedContent = 
+          titleKoMatch?.[1] || 
+          descriptionKoMatch?.[1] || 
+          fullContentKoMatch?.[1] || 
+          fullContentMatch?.[1] || 
+          category; // 최소한 카테고리 텍스트라도 사용
+        
+        emergency.interestingTweetsOrStories[0].category = getCategoryFromContent(undefined, extractedContent);
+      }
     }
     
     if (fullContentMatch && fullContentMatch[1]) {
@@ -531,7 +543,7 @@ function createEmergencyResponse(rawText: string): any {
           summary_ko: "OpenAI 응답 처리 중 오류가 발생했습니다.",
           title_ko: "응답 처리 오류",
           story_or_tweet_link: "https://www.example.com",
-          category: "개발자 도구",
+          category: getCategoryFromContent(undefined, "응답 처리 오류"),
           fullContent: "",
           fullContent_ko: "",
           imageUrls: [] as string[],
@@ -712,11 +724,11 @@ function prepareStories(stories: any[]): any[] {
     story.videoUrls = story.videoUrls || [];
     story.link = story.link || '';
     
-    // 카테고리 지정
-    const headline = story.headline || "";
-    story.category = headline.toLowerCase().includes("research") || 
-                     headline.toLowerCase().includes("paper") ? 
-                     "연구 동향" : "모델 업데이트";
+    // getCategoryFromContent 함수를 사용하여 카테고리 지정
+    story.category = getCategoryFromContent(
+      undefined, 
+      story.headline + " " + (story.fullContent?.substring(0, 1000) || "")
+    );
     
     return story;
   });

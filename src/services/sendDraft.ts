@@ -344,7 +344,7 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
  * @param content 포스트 내용
  * @returns 유효한 카테고리 (모델 업데이트, 연구 동향, 시장 동향, 개발자 도구 중 하나)
  */
-function getCategoryFromContent(existingCategory: string | undefined, content: string): string {
+export function getCategoryFromContent(existingCategory: string | undefined, content: string): string {
   // 유효한 카테고리 목록
   const validCategories = ['모델 업데이트', '연구 동향', '시장 동향', '개발자 도구'];
   
@@ -356,12 +356,42 @@ function getCategoryFromContent(existingCategory: string | undefined, content: s
   // 내용에 기반한 키워드 분류
   const contentLower = content.toLowerCase();
   
-  // 카테고리별 키워드
+  // 카테고리별 키워드 (세분화)
   const categoryKeywords = {
-    '모델 업데이트': ['gpt-', 'llama', 'claude', 'gemini', '모델 출시', '업데이트', '버전', '릴리스', '새로운 모델', '모델 개선', 'llm'],
-    '연구 동향': ['논문', '연구', '발표', '학습', '알고리즘', '성능', '향상', '연구팀', '발견', '혁신'],
-    '시장 동향': ['시장', '투자', '인수', '합병', '성장', '전망', '매출', '기업', '수익', '사업', '협력', '파트너십'],
-    '개발자 도구': ['api', '도구', '플랫폼', '개발', '코드', '라이브러리', '프레임워크', 'sdk', '오픈소스', '개발자']
+    '모델 업데이트': [
+      'gpt-', 'llama', 'claude', 'gemini', 'mistral', 'mixtral', 'palmyra', 'phi', 'falcon',
+      '모델 출시', '업데이트', '버전', '릴리스', '새로운 모델', '모델 개선', 'llm', 'fine-tuning', 
+      'fine tuned', '파인튜닝', '파라미터', 'parameter', '학습 데이터', 'training data',
+      'foundation model', '기반 모델', '대형 언어 모델', 'large language model', '생성형 AI',
+      'generative ai', '베이스 모델', 'base model', '앙상블', 'ensemble', '토크나이저', 'tokenizer',
+      'context length', '컨텍스트 길이', '컨텍스트 윈도우', 'context window'
+    ],
+    '연구 동향': [
+      '논문', '연구', '발표', '학습', '알고리즘', '성능', '향상', '연구팀', '발견', '혁신',
+      'arxiv', 'research', 'paper', 'study', 'academic', '학술', 'benchmark', '벤치마크',
+      'sota', 'state-of-the-art', 'state of the art', '최신 기술', '최신 연구', '최신 논문',
+      'novel', '새로운 방법', '새로운 접근', 'method', 'approach', '접근법', '방법론', 'methodology',
+      'architecture', '아키텍처', 'neural', '뉴럴', 'transformer', '트랜스포머', 'attention', '어텐션',
+      'diffusion', '디퓨전', 'gan', 'generative adversarial', 'reinforcement learning', '강화학습',
+      'self-supervised', 'self supervised', '자기지도학습', 'multimodal', '멀티모달', '다중모달'
+    ],
+    '시장 동향': [
+      '시장', '투자', '인수', '합병', '성장', '전망', '매출', '기업', '수익', '사업', '협력', '파트너십',
+      'funding', '펀딩', 'series', '시리즈', 'valuation', '기업가치', 'ipo', '상장', 'stock', '주식',
+      'market share', '시장 점유율', 'market cap', '시가총액', 'revenue', 'profit', '이익', 'loss', '손실',
+      'startup', '스타트업', 'venture', '벤처', 'capital', '캐피탈', 'acquisition', 'merger', 
+      'partnership', 'deal', '계약', '협약', 'alliance', '제휴', 'industry', '산업', 'sector', '섹터',
+      'commercial', '상업적', 'launch', '출시', 'product', '제품', 'service', '서비스', 'customer', '고객'
+    ],
+    '개발자 도구': [
+      'api', '도구', '플랫폼', '개발', '코드', '라이브러리', '프레임워크', 'sdk', '오픈소스', '개발자',
+      'tool', 'github', 'repository', '레포지토리', 'package', '패키지', 'developer', 'integration', '통합',
+      'plugin', '플러그인', 'extension', '확장', 'addon', '애드온', 'interface', '인터페이스', 'cli', 
+      'command line', '명령줄', 'terminal', '터미널', 'ide', 'environment', '환경', 'debug', '디버그',
+      'deployment', '배포', 'release', 'open source', '오픈소스', 'documentation', '문서화', 'tutorial',
+      '튜토리얼', 'guide', '가이드', 'features', '기능', 'ui', 'user interface', '사용자 인터페이스',
+      'ux', 'user experience', '사용자 경험', 'workflow', '워크플로우', 'automation', '자동화'
+    ]
   };
   
   // 각 카테고리별 점수 계산
