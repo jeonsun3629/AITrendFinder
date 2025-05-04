@@ -259,6 +259,11 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
       console.log(`Summary_ko 내용 길이: ${(item.summary_ko || '').length}바이트`);
       console.log(`content_full_kr 내용 길이: ${(item.content_full_kr || '').length}바이트`);
       
+      // 한국 시간(KST)으로 현재 날짜 생성
+      const koreaTime = new Date(new Date().getTime() + (9 * 60 * 60 * 1000));
+      const koreaDateStr = koreaTime.toISOString().split('T')[0];
+      console.log(`현재 한국 날짜로 설정: ${koreaDateStr}`);
+      
       try {
         await notion.pages.create({
           parent: {
@@ -282,7 +287,7 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
             },
             Date: {
               date: {
-                start: new Date().toISOString().split('T')[0],
+                start: koreaDateStr,
               },
             },
             Summary_kr: {
