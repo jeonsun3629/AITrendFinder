@@ -161,8 +161,18 @@ async function createBulletPointSummary(
       try {
         const bulletData = JSON.parse(bulletContent);
         if (Array.isArray(bulletData.bullet_points) && bulletData.bullet_points.length > 0) {
-          // 불렛포인트 형식으로 변환 (각 항목 사이에 빈 줄 추가)
-          return bulletData.bullet_points.map((point: string) => `• ${point}`).join('\n\n');
+          // HTML 태그 제거 및 마크다운 링크 정리
+          const cleanedPoints = bulletData.bullet_points.map((point: string) => {
+            // HTML 태그 제거
+            let cleaned = point.replace(/<[^>]*>/g, '');
+            // 마크다운 링크 정리 (예: [텍스트](링크) -> 텍스트)
+            cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+            return cleaned;
+          });
+          
+          // 불렛포인트 형식으로 변환하고 줄바꿈으로 구분
+          // 각 항목 앞에 명확한 불릿 포인트 기호를 추가하고 줄바꿈을 명시적으로 지정
+          return cleanedPoints.map((point: string) => `• ${point.trim()}`).join('\n\n');
         }
       } catch (parseError) {
         console.error("Error parsing bullet point summary response:", parseError);
@@ -171,14 +181,33 @@ async function createBulletPointSummary(
         if (bulletContent.includes('bullet_points')) {
           const points = bulletContent.match(/"[^"]+"/g);
           if (points && points.length > 0) {
-            return points.map(p => `• ${p.replace(/"/g, '')}`).join('\n\n');
+            // HTML 태그 제거 및 마크다운 링크 정리
+            const cleanedPoints = points.map(p => {
+              let cleaned = p.replace(/"/g, '').replace(/<[^>]*>/g, '');
+              cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+              return cleaned;
+            });
+            return cleanedPoints.map(p => `• ${p.trim()}`).join('\n\n');
           }
         }
       }
     } else {
       // 이미 불렛포인트 형식으로 응답된 경우
-      // 각 불렛포인트 항목 사이에 빈 줄 추가
-      return bulletContent.replace(/\n• /g, '\n\n• ');
+      // HTML 태그 제거
+      let cleanedContent = bulletContent.replace(/<[^>]*>/g, '');
+      // 마크다운 링크 정리
+      cleanedContent = cleanedContent.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+      // 각 불렛포인트 항목 사이에 빈 줄 추가하고 불릿 포인트 형식 통일
+      const lines = cleanedContent.split('\n').map(line => line.trim()).filter(line => line);
+      const formattedLines = lines.map(line => {
+        // 이미 불릿 포인트 기호가 있는 경우
+        if (line.startsWith('• ') || line.startsWith('- ') || line.startsWith('* ')) {
+          return `• ${line.substring(2).trim()}`;
+        }
+        // 불릿 포인트 기호가 없는 경우
+        return `• ${line}`;
+      });
+      return formattedLines.join('\n\n');
     }
   } catch (error) {
     console.error("Error creating bullet point summary:", error);
@@ -805,8 +834,8 @@ async function processSummaries(openai: OpenAI, stories: any[], model: string) {
     if (fullContentKo && fullContentKo.trim() !== "") {
       briefSummaryItems.push(fullContentKo);
       bulletPointItems.push({ 
-        text: typeof story.fullContent === 'string' ? story.fullContent : '', 
-        isTranslated: false 
+        text: fullContentKo, // 한국어 번역본을 사용
+        isTranslated: true // 이미 번역되었음을 표시
       });
     }
   }
@@ -890,7 +919,7 @@ function prepareTranslatedContent(stories: any[]) {
       summary_ko: item.summary_ko, // summary_ko 필드도 명시적으로 추가
       original: item.original,
       fullContent_ko: item.fullContent_ko,
-      content_full_kr: item.fullContent_ko || item.translated || '', // content_full_kr 필드도 추가
+      content_full_kr: item.content_full_kr || '', // 불릿포인트 형식 요약 사용
       category: item.category || '',
       content_storage_id: item.content_storage_id,
       image_url: item.image_url || [],

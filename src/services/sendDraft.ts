@@ -143,6 +143,23 @@ function createRichText(content: string | any): { text: { content: string } }[] 
   
   // 노션 API 텍스트 제한 (2000자)
   const truncated = truncateText(textContent);
+  
+  // 불릿 포인트가 있는 경우 각 항목을 분리하여 별도의 텍스트 항목으로 처리
+  if (truncated.includes('• ')) {
+    // 줄바꿈된 불릿 포인트를 개별 항목으로 분리
+    const bulletPoints = truncated.split('\n\n');
+    
+    if (bulletPoints.length > 1) {
+      console.log(`불릿 포인트 ${bulletPoints.length}개를 각각의 텍스트 블록으로 변환합니다.`);
+      
+      // 각 불릿 포인트를 별도의 rich_text 항목으로 변환
+      return bulletPoints.map(point => ({
+        text: { content: point.trim() + '\n' }
+      }));
+    }
+  }
+  
+  // 일반 텍스트의 경우 단일 항목으로 반환
   return [{ text: { content: truncated } }];
 }
 
@@ -252,6 +269,46 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
       // 링크 추가
       blocks.push(createParagraphBlock(item.link || '', item.link));
       
+      // 불릿 포인트 형식의 content_full_kr를 개별 블록으로 추가
+      if (item.content_full_kr && item.content_full_kr.includes('• ')) {
+        blocks.push({
+          object: "block",
+          type: "heading_3",
+          heading_3: {
+            rich_text: [{ type: "text", text: { content: "주요 내용 요약" } }]
+          }
+        });
+        
+        // 불릿 포인트 항목 분리
+        const bulletPoints = item.content_full_kr.split('\n\n')
+          .filter((line: string) => line.trim() !== '')
+          .map((line: string) => line.trim());
+        
+        // 각 불릿 포인트를 개별 블록으로 추가
+        bulletPoints.forEach((point: string) => {
+          if (point.startsWith('• ')) {
+            blocks.push({
+              object: "block",
+              type: "bulleted_list_item",
+              bulleted_list_item: {
+                rich_text: [{ 
+                  type: "text", 
+                  text: { content: point.substring(2).trim() } 
+                }]
+              }
+            });
+          } else {
+            blocks.push({
+              object: "block",
+              type: "bulleted_list_item",
+              bulleted_list_item: {
+                rich_text: [{ type: "text", text: { content: point } }]
+              }
+            });
+          }
+        });
+      }
+      
       // 노션에 페이지 생성 요청 전 로깅
       console.log(`Notion에 페이지 생성 중: ${typeof item.title_ko === 'string' ? item.title_ko : '무제'}`);
       
@@ -305,7 +362,7 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
               rich_text: createRichText(truncateText(await getFullContent(item)))
             },
             Content_full_kr: {
-              rich_text: createRichText(truncateText(item.content_full_kr || item.translated || ''))
+              rich_text: createRichText(truncateText(item.content_full_kr || ''))
             },
             Image_URL: {
               url: getValidUrlFromArray(item.image_url, "https://example.com/placeholder-image.jpg")
