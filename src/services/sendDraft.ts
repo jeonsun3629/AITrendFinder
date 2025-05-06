@@ -271,11 +271,27 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
       
       // 불릿 포인트 형식의 content_full_kr를 개별 블록으로 추가
       if (item.content_full_kr && item.content_full_kr.includes('• ')) {
+        // 구분선 추가
         blocks.push({
           object: "block",
-          type: "heading_3",
-          heading_3: {
+          type: "divider",
+          divider: {}
+        });
+        
+        blocks.push({
+          object: "block",
+          type: "heading_2",
+          heading_2: {
             rich_text: [{ type: "text", text: { content: "주요 내용 요약" } }]
+          }
+        });
+        
+        // 문단 추가 (공백 생성)
+        blocks.push({
+          object: "block",
+          type: "paragraph",
+          paragraph: {
+            rich_text: []
           }
         });
         
@@ -284,28 +300,31 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
           .filter((line: string) => line.trim() !== '')
           .map((line: string) => line.trim());
         
+        console.log(`불릿 포인트 항목 ${bulletPoints.length}개를 블록으로 변환합니다:`);
+        bulletPoints.forEach((point: string, index: number) => {
+          console.log(`  ${index + 1}. ${point.substring(0, 50)}...`);
+        });
+        
         // 각 불릿 포인트를 개별 블록으로 추가
         bulletPoints.forEach((point: string) => {
-          if (point.startsWith('• ')) {
-            blocks.push({
-              object: "block",
-              type: "bulleted_list_item",
-              bulleted_list_item: {
-                rich_text: [{ 
-                  type: "text", 
-                  text: { content: point.substring(2).trim() } 
-                }]
-              }
-            });
-          } else {
-            blocks.push({
-              object: "block",
-              type: "bulleted_list_item",
-              bulleted_list_item: {
-                rich_text: [{ type: "text", text: { content: point } }]
-              }
-            });
-          }
+          const content = point.startsWith('• ') ? point.substring(2).trim() : point;
+          blocks.push({
+            object: "block",
+            type: "bulleted_list_item",
+            bulleted_list_item: {
+              rich_text: [{ 
+                type: "text", 
+                text: { content }
+              }]
+            }
+          });
+        });
+        
+        // 구분선 추가
+        blocks.push({
+          object: "block",
+          type: "divider",
+          divider: {}
         });
       }
       
@@ -360,9 +379,6 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
             },
             Content_full: {
               rich_text: createRichText(truncateText(await getFullContent(item)))
-            },
-            Content_full_kr: {
-              rich_text: createRichText(truncateText(item.content_full_kr || ''))
             },
             Image_URL: {
               url: getValidUrlFromArray(item.image_url, "https://example.com/placeholder-image.jpg")

@@ -119,14 +119,15 @@ async function createBulletPointSummary(
     console.log(`Creating bullet point summary (${alreadyTranslated ? "already translated" : "needs translation"})`);
     
     const systemPrompt = alreadyTranslated
-      ? "긴 한국어 텍스트 내용을 정확히 10개의 핵심 불렛포인트로 요약하세요. 각 불렛포인트는 한 문장으로 구성되어야 합니다. 원문의 핵심 정보와 중요한 데이터를 최대한 포함하세요. JSON 형식으로 'bullet_points' 필드에 배열로 응답하세요."
+      ? "긴 한국어 텍스트를 정확히 10개의 핵심 불렛포인트로 요약하세요. 각 항목은 한 문장으로 구성되고 명확하게 작성되어야 합니다. 원문의 핵심 정보와 중요한 데이터를 최대한 포함하세요. JSON 형식으로 'bullet_points' 필드에 배열로 응답하세요. 불릿 기호나 번호를 포함하지 마세요."
       : `
-         다음 영어 본문을 분석하고 핵심 내용을 정확히 10개의 bullet point로 요약한 후 한국어로 번역해주세요.
-         각 bullet point는 '• ' 기호로 시작해야 합니다.
+         다음 영어 본문을 분석하고 핵심 내용을 정확히 10개의 간결한 요점으로 요약한 후 한국어로 번역해주세요.
+         각 요점은 하나의 완전한 문장으로 작성하세요.
+         불릿 기호나 번호를 포함하지 마세요.
          핵심 내용, 주요 주장, 중요한 데이터, 결론 등을 포함해야 합니다.
          간결하면서도 정보가 풍부하게 작성해주세요.
          모든 내용은 한국어로 번역되어야 합니다.
-         결과는 10개의 bullet point로만 제공하세요.
+         결과는 10개의 요점으로만 제공하세요.
        `;
        
     // 이미 번역된 텍스트는 JSON으로 응답 요청, 그렇지 않으면 일반 텍스트 응답
@@ -167,12 +168,23 @@ async function createBulletPointSummary(
             let cleaned = point.replace(/<[^>]*>/g, '');
             // 마크다운 링크 정리 (예: [텍스트](링크) -> 텍스트)
             cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+            // 기존 불릿이나 번호 제거
+            cleaned = cleaned.replace(/^[\d\-•*\s\.]+/, '').trim();
             return cleaned;
           });
           
-          // 불렛포인트 형식으로 변환하고 줄바꿈으로 구분
-          // 각 항목 앞에 명확한 불릿 포인트 기호를 추가하고 줄바꿈을 명시적으로 지정
-          return cleanedPoints.map((point: string) => `• ${point.trim()}`).join('\n\n');
+          // 불릿포인트 형식으로 변환하고 줄바꿈으로 구분
+          const formattedPoints = cleanedPoints.map((point: string) => {
+            // 각 문장이 마침표로 끝나는지 확인하고 추가
+            const sentence = point.trim();
+            const formattedSentence = sentence.endsWith('.') ? sentence : sentence + '.';
+            return `• ${formattedSentence}`;
+          });
+          
+          console.log(`${formattedPoints.length}개의 불릿 포인트 생성 완료`);
+          
+          // 일관된 개행을 사용하여 반환
+          return formattedPoints.join('\n\n');
         }
       } catch (parseError) {
         console.error("Error parsing bullet point summary response:", parseError);
@@ -185,9 +197,15 @@ async function createBulletPointSummary(
             const cleanedPoints = points.map(p => {
               let cleaned = p.replace(/"/g, '').replace(/<[^>]*>/g, '');
               cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
-              return cleaned;
+              // 기존 불릿이나 번호 제거
+              cleaned = cleaned.replace(/^[\d\-•*\s\.]+/, '').trim();
+              
+              // 각 문장이 마침표로 끝나는지 확인하고 추가
+              return cleaned.endsWith('.') ? cleaned : cleaned + '.';
             });
-            return cleanedPoints.map(p => `• ${p.trim()}`).join('\n\n');
+            
+            const formattedPoints = cleanedPoints.map(p => `• ${p}`);
+            return formattedPoints.join('\n\n');
           }
         }
       }
@@ -197,16 +215,17 @@ async function createBulletPointSummary(
       let cleanedContent = bulletContent.replace(/<[^>]*>/g, '');
       // 마크다운 링크 정리
       cleanedContent = cleanedContent.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+      
       // 각 불렛포인트 항목 사이에 빈 줄 추가하고 불릿 포인트 형식 통일
       const lines = cleanedContent.split('\n').map(line => line.trim()).filter(line => line);
       const formattedLines = lines.map(line => {
-        // 이미 불릿 포인트 기호가 있는 경우
-        if (line.startsWith('• ') || line.startsWith('- ') || line.startsWith('* ')) {
-          return `• ${line.substring(2).trim()}`;
-        }
-        // 불릿 포인트 기호가 없는 경우
-        return `• ${line}`;
+        // 기존 불릿이나 번호 제거
+        const cleanLine = line.replace(/^[\d\-•*\s\.]+/, '').trim();
+        // 각 문장이 마침표로 끝나는지 확인하고 추가
+        const formattedLine = cleanLine.endsWith('.') ? cleanLine : cleanLine + '.';
+        return `• ${formattedLine}`;
       });
+      
       return formattedLines.join('\n\n');
     }
   } catch (error) {
@@ -240,7 +259,7 @@ async function createBriefSummary(
     const truncatedText = text.substring(0, 6000);
     console.log(`요약할 텍스트 길이: ${truncatedText.length}바이트`);
     
-    // 첫 번째 시도: JSON 형식으로 요약 요청
+    // JSON 형식으로 요약 요청
     try {
       const summaryCompletion = await openai.chat.completions.create({
         model: model,
@@ -250,7 +269,7 @@ async function createBriefSummary(
         messages: [
           {
             role: "system",
-            content: "한국어로 된 텍스트를 3-4개의 문장으로 요약하세요. 핵심 내용을 정확하고 자세하게 포함해야 합니다. JSON 형식으로 응답하되, 'summary' 필드에 요약된 내용을 포함하세요."
+            content: "한국어로 된 텍스트를 3-4개의 문장으로 요약하세요. 핵심 내용을 정확하고 자세하게 포함해야 합니다. '이 기사는', '이 포스트는' 등의 문구로 시작하지 말고 직접적으로 핵심 내용을 전달하세요. JSON 형식으로 응답하되, 'summary' 필드에 요약된 내용을 포함하세요."
           },
           {
             role: "user",
@@ -282,32 +301,8 @@ async function createBriefSummary(
           }
         }
       }
-    } catch (firstAttemptError) {
-      console.error("First summary attempt failed:", firstAttemptError);
-    }
-    
-    // 첫 번째 시도가 실패한 경우, 두 번째 방식으로 요약 시도 (일반 텍스트 형식)
-    console.log("첫 번째 요약 시도 실패, 두 번째 방식으로 시도 중...");
-    const secondAttempt = await openai.chat.completions.create({
-      model: model,
-      temperature: 0.3,
-      max_tokens: 500,
-      messages: [
-        {
-          role: "system",
-          content: "한국어로 된 텍스트를 3-4개의 문장으로 요약하세요. 핵심 내용을 정확하고 자세하게 포함해야 합니다. 특별한 형식 없이 직접 요약 텍스트만 제공하세요."
-        },
-        {
-          role: "user",
-          content: `다음 한국어 텍스트를 3-4문장으로 요약하세요. 요약만 제공하고 다른 설명은 포함하지 마세요:\n\n${truncatedText}`
-        }
-      ]
-    });
-    
-    const plainSummary = secondAttempt.choices[0].message.content?.trim();
-    if (plainSummary) {
-      console.log(`두 번째 방식으로 요약 성공: ${plainSummary.length}바이트`);
-      return plainSummary;
+    } catch (error) {
+      console.error("Summary creation failed:", error);
     }
   } catch (error) {
     console.error("Error creating brief summary:", error);
