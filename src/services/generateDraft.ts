@@ -917,8 +917,8 @@ function prepareTranslatedContent(stories: any[]) {
       content_full_kr: item.content_full_kr || '', // 불릿포인트 형식 요약 사용
       category: item.category || '',
       content_storage_id: item.content_storage_id,
-      image_url: item.image_url || [],
-      video_url: item.video_url || []
+      image_url: item.imageUrls || [], // imageUrls → image_url로 매핑
+      video_url: item.videoUrls || []  // videoUrls → video_url로 매핑
     };
   });
 }

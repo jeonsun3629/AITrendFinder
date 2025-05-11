@@ -58,6 +58,29 @@ function getValidUrlFromArray(urls: any[] | undefined, defaultUrl: string): stri
 }
 
 /**
+ * 배열에서 최대 3개의 유효한 URL을 찾아 반환
+ */
+function getMultipleValidUrls(urls: any[] | undefined, maxUrls: number = 3): string[] {
+  if (!urls || !Array.isArray(urls)) {
+    return [];
+  }
+  
+  const validUrls: string[] = [];
+  
+  for (const url of urls) {
+    const urlStr = typeof url === 'string' ? url : '';
+    if (isValidUrl(urlStr) && !validUrls.includes(urlStr)) {
+      validUrls.push(urlStr);
+      if (validUrls.length >= maxUrls) {
+        break;
+      }
+    }
+  }
+  
+  return validUrls;
+}
+
+/**
  * 원문 내용 가져오기 (Supabase 또는 item.content_full 사용)
  */
 async function getFullContent(item: any): Promise<string> {
@@ -325,6 +348,96 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
           object: "block",
           type: "divider",
           divider: {}
+        });
+      }
+      
+      // 이미지 URL 추가 (최대 3개)
+      const imageUrls = getMultipleValidUrls(item.image_url);
+      if (imageUrls.length > 0) {
+        // 구분선 및 이미지 헤더 추가
+        blocks.push({
+          object: "block",
+          type: "divider",
+          divider: {}
+        });
+        
+        blocks.push({
+          object: "block",
+          type: "heading_3",
+          heading_3: {
+            rich_text: [{ type: "text", text: { content: "관련 이미지" } }]
+          }
+        });
+        
+        // 각 이미지 URL을 개별 블록으로 추가
+        imageUrls.forEach((imgUrl, index) => {
+          blocks.push({
+            object: "block",
+            type: "paragraph",
+            paragraph: {
+              rich_text: [
+                { 
+                  type: "text", 
+                  text: { 
+                    content: `이미지 ${index + 1}: `,
+                  }
+                },
+                { 
+                  type: "text", 
+                  text: { 
+                    content: imgUrl,
+                    link: { url: imgUrl }
+                  }
+                }
+              ]
+            }
+          });
+        });
+      }
+      
+      // 비디오 URL 추가 (최대 3개)
+      const videoUrls = getMultipleValidUrls(item.video_url);
+      if (videoUrls.length > 0) {
+        // 비디오 헤더 추가 (이미지가 없을 경우 구분선 추가)
+        if (imageUrls.length === 0) {
+          blocks.push({
+            object: "block",
+            type: "divider",
+            divider: {}
+          });
+        }
+        
+        blocks.push({
+          object: "block",
+          type: "heading_3",
+          heading_3: {
+            rich_text: [{ type: "text", text: { content: "관련 비디오" } }]
+          }
+        });
+        
+        // 각 비디오 URL을 개별 블록으로 추가
+        videoUrls.forEach((videoUrl, index) => {
+          blocks.push({
+            object: "block",
+            type: "paragraph",
+            paragraph: {
+              rich_text: [
+                { 
+                  type: "text", 
+                  text: { 
+                    content: `비디오 ${index + 1}: `,
+                  }
+                },
+                { 
+                  type: "text", 
+                  text: { 
+                    content: videoUrl,
+                    link: { url: videoUrl }
+                  }
+                }
+              ]
+            }
+          });
         });
       }
       
