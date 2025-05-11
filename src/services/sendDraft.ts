@@ -380,6 +380,9 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
             Content_full: {
               rich_text: createRichText(truncateText(await getFullContent(item)))
             },
+            Content_full_kr: {
+              rich_text: createRichText(item.content_full_kr || '')
+            },
             Image_URL: {
               url: getValidUrlFromArray(item.image_url, "https://example.com/placeholder-image.jpg")
             },
