@@ -97,7 +97,7 @@ def parse_date(date_str: str) -> str:
         print(f"날짜 파싱 오류: {str(e)}")
         return date_str
 
-# 현재 날짜에 관련된 콘텐츠인지 확인
+# 날짜 관련성 확인 - 최대 3일까지의 기사 포함
 def is_relevant_date(date_str: str, target_date: Optional[str] = None) -> bool:
     if not target_date:
         return True
@@ -114,6 +114,27 @@ def is_relevant_date(date_str: str, target_date: Optional[str] = None) -> bool:
         # 대상 날짜부터 미래 방향으로 3일, 과거 방향으로 0일
         # 즉, target_date가 과거일 경우(예: 어제) 어제부터 미래 3일까지 포함
         return -1 <= days_diff <= 3
+    except:
+        # 날짜 비교 실패 시 포함 (안전성)
+        return True
+
+# 날짜 관련성 확인 - 최대 7일까지의 기사 포함
+def is_relevant_date(date_str: str, target_date: Optional[str] = None) -> bool:
+    if not target_date:
+        return True
+    
+    try:
+        parsed_date = parse_date(date_str)
+        target = datetime.strptime(target_date, '%Y-%m-%d').date()
+        content_date = datetime.strptime(parsed_date, '%Y-%m-%d').date()
+        
+        # 대상 날짜로부터 7일 이내의 콘텐츠 포함
+        delta = content_date - target
+        days_diff = delta.days
+        
+        # 대상 날짜부터 미래 방향으로 7일, 과거 방향으로 3일
+        # 대상 날짜가 과거일 경우(예: 어제) 더 넓은 범위의 콘텐츠 수집
+        return -3 <= days_diff <= 7
     except:
         # 날짜 비교 실패 시 포함 (안전성)
         return True

@@ -181,45 +181,52 @@ function isLikelyRecent(dateString: string): boolean {
   
   const dateLower = dateString.toLowerCase();
   
+  // 1. 명시적으로 최근 시간을 나타내는 키워드 확인 (더 많은 키워드 추가)
   const recentTimeKeywords = [
-    'today', 'hours ago', 'minutes ago', 'just now', 'hour ago',
-    '시간 전', '분 전', '방금', 'yesterday', 'a day ago', '1 day ago'
+    'today', 'hours ago', 'minutes ago', 'just now', 'hour ago', 'min ago', 'mins ago',
+    '시간 전', '분 전', '방금', 'yesterday', 'a day ago', '1 day ago', 'about 1 hour ago'
   ];
   
   if (recentTimeKeywords.some(keyword => dateLower.includes(keyword))) {
     return true;
   }
   
-  const timePattern = /(\d+)\s*(hour|minute|day|시간|분|일)\s*(ago|전)?/i;
+  // 2. "X minutes/hours/days ago" 패턴 매칭 (정규식 개선)
+  const timePattern = /(\d+)\s*(hour|hours|minute|minutes|day|days|시간|분|일|h|m|d)\s*(ago|전)?/i;
   const timeMatch = dateLower.match(timePattern);
   
   if (timeMatch) {
     const amount = parseInt(timeMatch[1]);
     const unit = timeMatch[2].toLowerCase();
     
+    // 시간 단위 (24-36시간 내로 제한)
     if (unit.includes('hour') || unit.includes('시간') || unit === 'h') {
-      return amount <= 36; // 24시간에서 36시간으로 확장
+      return amount <= 36; // 36시간까지만 허용
     }
     
-    if (unit.includes('minute') || unit.includes('분') || unit === 'm') {
+    // 분 단위는 항상 최근으로 간주
+    if (unit.includes('minute') || unit.includes('min') || unit.includes('분') || unit === 'm') {
       return true;
     }
     
+    // 일 단위 제한
     if (unit.includes('day') || unit.includes('일') || unit === 'd') {
-      return amount <= 3; // 2일에서 3일로 확장
+      return amount <= 1; // 1일(어제)까지만 허용
     }
   }
   
+  // 3. 오래된 콘텐츠 키워드 확인 (최근 24시간 이전 콘텐츠 제외)
   const oldKeywords = [
-    'last week', 'last month', 'last year', 
-    '지난주', '지난달', '작년', 
-    '4 days ago', '5 days ago', '6 days ago', '7 days ago'
+    'last month', 'last year', 'last week',
+    '지난달', '작년', '지난주',
+    '2 days ago', '3 days ago', '4 days ago', '5 days ago', 'weeks ago'
   ];
   
   if (oldKeywords.some(keyword => dateLower.includes(keyword))) {
     return false;
   }
   
+  // 4. 오늘 날짜 포함 확인
   const today = new Date();
   const todayStr = today.toISOString().split('T')[0];
   
@@ -227,6 +234,7 @@ function isLikelyRecent(dateString: string): boolean {
     return true;
   }
   
+  // 5. 실제 날짜 비교 (시간 범위 확장)
   try {
     const date = new Date(dateString);
     
@@ -235,7 +243,8 @@ function isLikelyRecent(dateString: string): boolean {
       const timeDiff = now.getTime() - date.getTime();
       const hoursDiff = timeDiff / (1000 * 60 * 60);
       
-      if (hoursDiff <= 36 && hoursDiff >= -36) {
+      // 시간 범위를 24시간으로 제한 (약간의 여유 포함)
+      if (hoursDiff <= 36 && hoursDiff >= -12) {
         return true;
       }
     }
@@ -291,12 +300,12 @@ async function scrapeSource(source: string, now: Date): Promise<Story[]> {
     console.log(`최근 24시간(${yesterdayDate} ~ ${todayDate}) 내의 AI 관련 기사를 크롤링합니다.`);
     
     // crawl4ai를 사용하여 웹사이트 크롤링
-    // 추가 안내 포함: 최신(오늘) 기사, AI 관련 콘텐츠만 크롤링
+    // 추가 안내 포함: 최근 24시간 기사, AI 관련 콘텐츠 크롤링
     const crawlResults = await crawlWebsites(
       [{ identifier: source }],
       { 
         llmProvider,
-        // 크롤러가 오늘 날짜의 AI 관련 콘텐츠에 집중하도록 메타데이터 추가
+        // 크롤러가 최근 24시간 내 AI 관련 콘텐츠에 집중하도록 메타데이터 추가
         meta: {
           targetDate: yesterdayDate,
           contentFocus: 'AI technology, machine learning, large language models, deep learning',
@@ -461,12 +470,12 @@ export async function scrapeSources(
       // 동적 크롤링 사용
       console.log("Playwright를 사용한 동적 크롤링 시작...");
       
-      // 동적 크롤링 실행
-      const crawlResults = await dynamicCrawlWebsites(sources, {
-        targetDate: yesterdayFormatted, // 어제 날짜로 설정하여 24시간 이내 기사 포함
-        contentFocus: "AI, machine learning, artificial intelligence, neural network, large language model, LLM",
-        maxLinksPerSource: 5
-      });
+              // 동적 크롤링 실행
+        const crawlResults = await dynamicCrawlWebsites(sources, {
+          targetDate: yesterdayFormatted, // 어제 날짜로 설정하여 24시간 이내 기사 포함
+          contentFocus: "AI, machine learning, artificial intelligence, neural network, large language model, LLM",
+          maxLinksPerSource: 5
+        });
       
       for (const story of crawlResults) {
         // 콘텐츠 저장
