@@ -19,7 +19,18 @@ jobs:
           node-version: '18'
           cache: 'npm'
 
-      - name: 종속성 설치
+      - name: Python 설정
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Crawl4AI 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install git+https://github.com/unclecode/crawl4ai.git
+
+      - name: Node.js 종속성 설치
         run: npm ci
 
       - name: Trend Finder 실행
@@ -27,7 +38,6 @@ jobs:
           TOGETHER_API_KEY: ${{ secrets.TOGETHER_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
           X_API_BEARER_TOKEN: ${{ secrets.X_API_BEARER_TOKEN }}
           NOTIFICATION_DRIVER: "notion"
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -110,129 +110,162 @@ async function createBulletPointSummary(
     return "";
   }
   
-  try {
-    // OpenAI 클라이언트가 없으면 생성
-    if (!openai) {
-      openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    }
-    
-    console.log(`Creating bullet point summary (${alreadyTranslated ? "already translated" : "needs translation"})`);
-    
-    const systemPrompt = alreadyTranslated
-      ? "긴 한국어 텍스트를 정확히 10개의 핵심 불렛포인트로 요약하세요. 각 항목은 한 문장으로 구성되고 명확하게 작성되어야 합니다. 원문의 핵심 정보와 중요한 데이터를 최대한 포함하세요. JSON 형식으로 'bullet_points' 필드에 배열로 응답하세요. 불릿 기호나 번호를 포함하지 마세요."
-      : `
-         다음 영어 본문을 분석하고 핵심 내용을 정확히 10개의 간결한 요점으로 요약한 후 한국어로 번역해주세요.
-         각 요점은 하나의 완전한 문장으로 작성하세요.
-         불릿 기호나 번호를 포함하지 마세요.
-         핵심 내용, 주요 주장, 중요한 데이터, 결론 등을 포함해야 합니다.
-         간결하면서도 정보가 풍부하게 작성해주세요.
-         모든 내용은 한국어로 번역되어야 합니다.
-         결과는 10개의 요점으로만 제공하세요.
-       `;
-       
-    // 이미 번역된 텍스트는 JSON으로 응답 요청, 그렇지 않으면 일반 텍스트 응답
-    const responseFormat = alreadyTranslated
-      ? { type: "json_object" as const }
-      : undefined;
-    
-    const userPrompt = alreadyTranslated
-      ? `다음 텍스트를 10개의 불렛포인트로 요약하세요:\n\n${text.substring(0, 15000)}`
-      : text.substring(0, 15000);
-    
-    const bulletSummaryCompletion = await openai.chat.completions.create({
-      model: model,
-      temperature: 0.5,
-      max_tokens: 2000,
-      response_format: responseFormat,
-      messages: [
-        {
-          role: "system",
-          content: systemPrompt
-        },
-        {
-          role: "user",
-          content: userPrompt
-        }
-      ]
-    });
-    
-    const bulletContent = bulletSummaryCompletion.choices[0].message.content?.trim() || '';
-    
-    if (alreadyTranslated) {
-      try {
-        const bulletData = JSON.parse(bulletContent);
-        if (Array.isArray(bulletData.bullet_points) && bulletData.bullet_points.length > 0) {
-          // HTML 태그 제거 및 마크다운 링크 정리
-          const cleanedPoints = bulletData.bullet_points.map((point: string) => {
-            // HTML 태그 제거
-            let cleaned = point.replace(/<[^>]*>/g, '');
-            // 마크다운 링크 정리 (예: [텍스트](링크) -> 텍스트)
-            cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
-            // 기존 불릿이나 번호 제거
-            cleaned = cleaned.replace(/^[\d\-•*\s\.]+/, '').trim();
-            return cleaned;
-          });
-          
-          // 불릿포인트 형식으로 변환하고 줄바꿈으로 구분
-          const formattedPoints = cleanedPoints.map((point: string) => {
-            // 각 문장이 마침표로 끝나는지 확인하고 추가
-            const sentence = point.trim();
-            const formattedSentence = sentence.endsWith('.') ? sentence : sentence + '.';
-            return `• ${formattedSentence}`;
-          });
-          
-          console.log(`${formattedPoints.length}개의 불릿 포인트 생성 완료`);
-          
-          // 일관된 개행을 사용하여 반환
-          return formattedPoints.join('\n\n');
-        }
-      } catch (parseError) {
-        console.error("Error parsing bullet point summary response:", parseError);
-        
-        // JSON 파싱 실패 시 정규식으로 추출 시도
-        if (bulletContent.includes('bullet_points')) {
-          const points = bulletContent.match(/"[^"]+"/g);
-          if (points && points.length > 0) {
+  // 최대 재시도 횟수 설정
+  const maxRetries = 3;
+  let retries = 0;
+  
+  while (retries <= maxRetries) {
+    try {
+      // OpenAI 클라이언트가 없으면 생성
+      if (!openai) {
+        openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      }
+      
+      console.log(`Creating bullet point summary (${alreadyTranslated ? "already translated" : "needs translation"})`);
+      
+      const systemPrompt = alreadyTranslated
+        ? "긴 한국어 텍스트를 정확히 10개의 핵심 불렛포인트로 요약하세요. 각 항목은 한 문장으로 구성되고 명확하게 작성되어야 합니다. 원문의 핵심 정보와 중요한 데이터를 최대한 포함하세요. JSON 형식으로 'bullet_points' 필드에 배열로 응답하세요. 불릿 기호나 번호를 포함하지 마세요."
+        : `
+           다음 영어 본문을 분석하고 핵심 내용을 정확히 10개의 간결한 요점으로 요약한 후 한국어로 번역해주세요.
+           각 요점은 하나의 완전한 문장으로 작성하세요.
+           불릿 기호나 번호를 포함하지 마세요.
+           핵심 내용, 주요 주장, 중요한 데이터, 결론 등을 포함해야 합니다.
+           간결하면서도 정보가 풍부하게 작성해주세요.
+           모든 내용은 한국어로 번역되어야 합니다.
+           결과는 10개의 요점으로만 제공하세요.
+         `;
+         
+      // 이미 번역된 텍스트는 JSON으로 응답 요청, 그렇지 않으면 일반 텍스트 응답
+      const responseFormat = alreadyTranslated
+        ? { type: "json_object" as const }
+        : undefined;
+      
+      const userPrompt = alreadyTranslated
+        ? `다음 텍스트를 10개의 불렛포인트로 요약하세요:\n\n${text.substring(0, 15000)}`
+        : text.substring(0, 15000);
+      
+      const bulletSummaryCompletion = await openai.chat.completions.create({
+        model: model,
+        temperature: 0.5,
+        max_tokens: 2000,
+        response_format: responseFormat,
+        messages: [
+          {
+            role: "system",
+            content: systemPrompt
+          },
+          {
+            role: "user",
+            content: userPrompt
+          }
+        ]
+      });
+      
+      const bulletContent = bulletSummaryCompletion.choices[0].message.content?.trim() || '';
+      
+      if (alreadyTranslated) {
+        try {
+          const bulletData = JSON.parse(bulletContent);
+          if (Array.isArray(bulletData.bullet_points) && bulletData.bullet_points.length > 0) {
             // HTML 태그 제거 및 마크다운 링크 정리
-            const cleanedPoints = points.map(p => {
-              let cleaned = p.replace(/"/g, '').replace(/<[^>]*>/g, '');
+            const cleanedPoints = bulletData.bullet_points.map((point: string) => {
+              // HTML 태그 제거
+              let cleaned = point.replace(/<[^>]*>/g, '');
+              // 마크다운 링크 정리 (예: [텍스트](링크) -> 텍스트)
               cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
               // 기존 불릿이나 번호 제거
               cleaned = cleaned.replace(/^[\d\-•*\s\.]+/, '').trim();
-              
-              // 각 문장이 마침표로 끝나는지 확인하고 추가
-              return cleaned.endsWith('.') ? cleaned : cleaned + '.';
+              return cleaned;
             });
             
-            const formattedPoints = cleanedPoints.map(p => `• ${p}`);
+            // 불릿포인트 형식으로 변환하고 줄바꿈으로 구분
+            const formattedPoints = cleanedPoints.map((point: string) => {
+              // 각 문장이 마침표로 끝나는지 확인하고 추가
+              const sentence = point.trim();
+              const formattedSentence = sentence.endsWith('.') ? sentence : sentence + '.';
+              return `• ${formattedSentence}`;
+            });
+            
+            console.log(`${formattedPoints.length}개의 불릿 포인트 생성 완료`);
+            
+            // 일관된 개행을 사용하여 반환
             return formattedPoints.join('\n\n');
           }
+        } catch (parseError) {
+          console.error("Error parsing bullet point summary response:", parseError);
+          
+          // JSON 파싱 실패 시 정규식으로 추출 시도
+          if (bulletContent.includes('bullet_points')) {
+            const points = bulletContent.match(/"[^"]+"/g);
+            if (points && points.length > 0) {
+              // HTML 태그 제거 및 마크다운 링크 정리
+              const cleanedPoints = points.map(p => {
+                let cleaned = p.replace(/"/g, '').replace(/<[^>]*>/g, '');
+                cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+                // 기존 불릿이나 번호 제거
+                cleaned = cleaned.replace(/^[\d\-•*\s\.]+/, '').trim();
+                
+                // 각 문장이 마침표로 끝나는지 확인하고 추가
+                return cleaned.endsWith('.') ? cleaned : cleaned + '.';
+              });
+              
+              const formattedPoints = cleanedPoints.map(p => `• ${p}`);
+              return formattedPoints.join('\n\n');
+            }
+          }
+        }
+      } else {
+        // 이미 불렛포인트 형식으로 응답된 경우
+        // HTML 태그 제거
+        let cleanedContent = bulletContent.replace(/<[^>]*>/g, '');
+        // 마크다운 링크 정리
+        cleanedContent = cleanedContent.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+        
+        // 각 불렛포인트 항목 사이에 빈 줄 추가하고 불릿 포인트 형식 통일
+        const lines = cleanedContent.split('\n').map(line => line.trim()).filter(line => line);
+        const formattedLines = lines.map(line => {
+          // 기존 불릿이나 번호 제거
+          const cleanLine = line.replace(/^[\d\-•*\s\.]+/, '').trim();
+          // 각 문장이 마침표로 끝나는지 확인하고 추가
+          const formattedLine = cleanLine.endsWith('.') ? cleanLine : cleanLine + '.';
+          return `• ${formattedLine}`;
+        });
+        
+        return formattedLines.join('\n\n');
+      }
+      
+      // 여기까지 왔다면 요약 실패로 간주하고 재시도
+      throw new Error("불릿 포인트 생성 실패");
+      
+    } catch (error: any) {
+      console.error("Error creating bullet point summary:", error);
+      
+      // Rate Limit 오류인 경우 대기 후 재시도
+      if (error.status === 429) {
+        retries++;
+        if (retries <= maxRetries) {
+          // 재시도 대기 시간 - retry-after-ms 헤더가 있으면 사용, 없으면 기본값 사용
+          const retryAfterMs = error.headers?.['retry-after-ms'] 
+            ? parseInt(error.headers['retry-after-ms']) 
+            : (5000 * retries); // 점점 대기 시간 증가
+          
+          console.log(`Rate limit 도달, ${retryAfterMs}ms 후 재시도 (${retries}/${maxRetries})...`);
+          await new Promise(resolve => setTimeout(resolve, retryAfterMs + 1000)); // 여유 있게 1초 추가
+          continue;
         }
       }
-    } else {
-      // 이미 불렛포인트 형식으로 응답된 경우
-      // HTML 태그 제거
-      let cleanedContent = bulletContent.replace(/<[^>]*>/g, '');
-      // 마크다운 링크 정리
-      cleanedContent = cleanedContent.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
       
-      // 각 불렛포인트 항목 사이에 빈 줄 추가하고 불릿 포인트 형식 통일
-      const lines = cleanedContent.split('\n').map(line => line.trim()).filter(line => line);
-      const formattedLines = lines.map(line => {
-        // 기존 불릿이나 번호 제거
-        const cleanLine = line.replace(/^[\d\-•*\s\.]+/, '').trim();
-        // 각 문장이 마침표로 끝나는지 확인하고 추가
-        const formattedLine = cleanLine.endsWith('.') ? cleanLine : cleanLine + '.';
-        return `• ${formattedLine}`;
-      });
+      // 최대 재시도 횟수 초과 또는 다른 종류의 오류
+      if (retries >= maxRetries) {
+        console.error(`최대 재시도 횟수(${maxRetries}) 초과. 요약 생성 실패.`);
+      }
       
-      return formattedLines.join('\n\n');
+      // 기본 응답 반환
+      return "• 요약을 생성할 수 없습니다.";
     }
-  } catch (error) {
-    console.error("Error creating bullet point summary:", error);
   }
   
-  return "요약을 생성할 수 없습니다.";
+  return "• 요약을 생성할 수 없습니다.";
 }
 
 /**
@@ -263,7 +296,7 @@ async function createBriefSummary(
     try {
       const summaryCompletion = await openai.chat.completions.create({
         model: model,
-        temperature: 0.5,
+        temperature: 0.6,
         max_tokens: 500,
         response_format: { type: "json_object" },
         messages: [
@@ -403,7 +436,7 @@ async function processBatchTranslations(
               return chatCompletion.choices[0]?.message?.content || "";
             },
             {
-              retries: 3,
+              retries: 1,
               timeout: 10000,
             }
           );
@@ -627,10 +660,10 @@ export async function generateDraft(rawStories: string) {
         try {
           console.log(`Supabase에서 스토리 가져오기 시도 (ID: ${story.id})`);
           const contentFromStorage = await retrieveFullContent(story.id);
-          if (contentFromStorage) {
-            console.log(`Supabase에서 콘텐츠 가져오기 성공 (${contentFromStorage.length} 바이트)`);
+          if (contentFromStorage && contentFromStorage.content_full) {
+            console.log(`Supabase에서 콘텐츠 가져오기 성공 (${contentFromStorage.content_full.length} 바이트)`);
             // 원본 콘텐츠 갱신
-            story.fullContent = contentFromStorage;
+            story.fullContent = contentFromStorage.content_full;
             // 스토리지 ID 설정
             story.content_storage_id = story.id;
             story.content_storage_method = 'database';
@@ -840,9 +873,27 @@ async function processSummaries(openai: OpenAI, stories: any[], model: string) {
     briefSummaryItems.map(text => createBriefSummary(text, model, openai))
   );
   
-  const bulletPointSummaries = await Promise.all(
-    bulletPointItems.map(item => createBulletPointSummary(item.text, model, item.isTranslated, openai))
-  );
+  // Rate Limit 방지를 위해 순차적으로 불릿 포인트 요약 처리
+  const bulletPointSummaries: string[] = [];
+  for (const item of bulletPointItems) {
+    try {
+      const summary = await createBulletPointSummary(item.text, model, item.isTranslated, openai);
+      bulletPointSummaries.push(summary);
+      
+      // Rate Limit 방지를 위한 딜레이 (3~5초)
+      const delay = Math.floor(Math.random() * 2000) + 3000;
+      console.log(`Rate Limit 방지를 위해 ${delay}ms 대기 중...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    } catch (error) {
+      console.error("Bullet point creation error:", error);
+      // 오류 발생 시 기본값 추가
+      bulletPointSummaries.push("• 요약을 생성할 수 없습니다.");
+      
+      // 오류 후 더 길게 대기 (10초)
+      console.log("오류 발생 후 10초 대기 중...");
+      await new Promise(resolve => setTimeout(resolve, 10000));
+    }
+  }
   
   return { briefSummaries, bulletPointSummaries };
 }
@@ -914,6 +965,7 @@ function prepareTranslatedContent(stories: any[]) {
       summary_ko: item.summary_ko, // summary_ko 필드도 명시적으로 추가
       original: item.original,
       fullContent_ko: item.fullContent_ko,
+      content_full: item.content_full,
       content_full_kr: item.content_full_kr || '', // 불릿포인트 형식 요약 사용
       category: item.category || '',
       content_storage_id: item.content_storage_id,

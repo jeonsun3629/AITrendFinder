@@ -1,25 +1,21 @@
-import FirecrawlApp from "@mendable/firecrawl-js";
 import dotenv from "dotenv";
 import { z } from "zod";
 import axios from "axios";
 import { storeFullContent } from './contentStorage';
 import crypto from 'crypto';
+import { crawlWebsites, checkCrawl4aiInstallation, installCrawl4ai, dynamicCrawlWebsites, Story as Crawl4aiStory, classifyContentHierarchically } from './crawl4aiService';
+import { getCategoryFromContent } from './sendDraft';
 
 dotenv.config();
 
 // 설정 상수
 const CONFIG = {
-  FIRECRAWL_API_URL: process.env.FIRECRAWL_API_URL || "https://api.firecrawl.dev/v1",
-  FIRECRAWL_API_KEY: process.env.FIRECRAWL_API_KEY || "",
   BATCH_SIZE: parseInt(process.env.CRAWL_BATCH_SIZE || '3', 10),
-  BATCH_DELAY: parseInt(process.env.CRAWL_BATCH_DELAY || '5000', 10),
-  REQUEST_DELAY: parseInt(process.env.CRAWL_ITEM_DELAY || '1000', 10),
+  BATCH_DELAY: parseInt(process.env.CRAWL_BATCH_DELAY || '15000', 10), // 15초로 증가
+  REQUEST_DELAY: parseInt(process.env.CRAWL_ITEM_DELAY || '3000', 10), // 3초로 증가
   MAX_STORIES_PER_SOURCE: parseInt(process.env.MAX_STORIES_PER_SOURCE || '3', 10),
   MAX_RETRIES: parseInt(process.env.MAX_RETRIES || '3', 10)
 };
-
-// FirecrawlApp 인스턴스 생성
-const app = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY });
 
 // 블로그 사이트 설정 인터페이스
 interface BlogSiteConfig {
@@ -149,7 +145,13 @@ const StorySchema = z.object({
   videoUrls: z.array(z.string()).optional().describe("Video URLs from the post"),
   popularity: z.string().optional().describe("Popularity metrics like retweets, likes, etc."),
   content_storage_id: z.string().optional().describe("ID of the stored content in the database"),
-  content_storage_method: z.string().optional().describe("Method used to store the content")
+  content_storage_method: z.string().optional().describe("Method used to store the content"),
+  category: z.string().optional().describe("Main category of the content"),
+  metadata: z.object({
+    subCategories: z.array(z.string()).optional(),
+    topics: z.array(z.string()).optional(),
+    confidence: z.number().optional()
+  }).optional().describe("Additional metadata about the content classification")
 });
 
 const ContentSchema = z.object({
@@ -244,393 +246,394 @@ function isLikelyRecent(dateString: string): boolean {
   return false;
 }
 
-async function getContentFromUrl(url: string): Promise<ContentData | null> {
-  try {
-    const urlObj = new URL(url);
-    const domain = urlObj.hostname;
-    
-    const blogConfig = getBlogConfig(domain);
-
-    const scrapeOptions: any = {
-      url: url,
-      formats: ["markdown", "html"],
-      onlyMainContent: true,
-      removeBase64Images: false,
-      waitFor: blogConfig?.waitFor || 3000,
-      timeout: 60000,
-    };
-
-    if (blogConfig) {
-      if (blogConfig.contentSelector) {
-        scrapeOptions.actions = [
-          {
-            type: "wait",
-            milliseconds: blogConfig.waitFor || 3000
-          },
-          {
-            type: "scroll",
-            direction: "down"
-          },
-          {
-            type: "wait",
-            milliseconds: 1000
-          }
-        ];
-      }
-      
-      if (blogConfig.excludeTags) {
-        scrapeOptions.excludeTags = blogConfig.excludeTags;
-      }
-    }
-
-    if (domain.includes('huggingface.co')) {
-      scrapeOptions.actions = [
-        { type: "wait", milliseconds: 5000 },
-        { type: "scroll", direction: "down" },
-        { type: "wait", milliseconds: 1000 },
-        { type: "scroll", direction: "down" },
-        { type: "wait", milliseconds: 1000 },
-        { type: "scroll", direction: "down" },
-        { type: "wait", milliseconds: 1000 }
-      ];
-      
-      scrapeOptions.includeTags = ["article", ".prose", ".markdown", ".blog-post-content"];
-    }
-
-    const response = await axios.post(`${CONFIG.FIRECRAWL_API_URL}/scrape`, scrapeOptions, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${CONFIG.FIRECRAWL_API_KEY}`
-      },
-      timeout: 60000
-    });
-    
-    if (!response.data || response.data.error) {
-      console.error(`스크래핑 API 오류: ${response.data?.error || '알 수 없는 오류'}`);
-      return null;
-    }
-
-    const responseData = response.data.data || response.data;
-    const content = responseData.markdown || '';
-    const html = responseData.html || '';
-    
-    const isIncomplete = content.endsWith('...') || 
-                         content.endsWith('…') || 
-                         /[A-Za-z]$/.test(content);
-    
-    if (content.includes('404') && (content.includes('Not Found') || content.includes('Page not found')) ||
-        html.includes('<title>404') ||
-        html.toLowerCase().includes('page not found') ||
-        response.data.statusCode === 404 ||
-        responseData.metadata?.statusCode === 404) {
-      return null;
-    }
-
-    const minContentLength = 500;
-    if (content.length < minContentLength || isIncomplete) {
-      if (domain.includes('huggingface.co')) {
-        const huggingFaceResponse = await apiCallWithRetry(() => 
-          axios.post(`${CONFIG.FIRECRAWL_API_URL}/scrape`, {
-            ...scrapeOptions,
-            formats: ["markdown", "html", "screenshot@fullPage"],
-            onlyMainContent: false,
-            removeBase64Images: false,
-            actions: [
-              { type: "wait", milliseconds: 5000 },
-              { type: "scroll", direction: "down" },
-              { type: "wait", milliseconds: 2000 },
-              { type: "scroll", direction: "down" },
-              { type: "wait", milliseconds: 2000 }
-            ]
-          }, {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${CONFIG.FIRECRAWL_API_KEY}`
-            },
-            timeout: 90000
-          })
-        );
-        
-        const huggingFaceData = huggingFaceResponse.data.data || huggingFaceResponse.data;
-        if (huggingFaceData && huggingFaceData.markdown && huggingFaceData.markdown.length > minContentLength) {
-          return {
-            fullContent: huggingFaceData.markdown,
-            imageUrls: extractImageUrls(huggingFaceData.html || ''),
-            videoUrls: extractVideoUrls(huggingFaceData.html || '')
-          };
-        }
-      }
-      
-      const retryResponse = await apiCallWithRetry(() =>
-        axios.post(`${CONFIG.FIRECRAWL_API_URL}/scrape`, {
-          ...scrapeOptions, 
-          formats: ["html", "rawHtml"],
-          onlyMainContent: false,
-          actions: [
-            { type: "wait", milliseconds: 5000 },
-            { type: "scroll", direction: "down" },
-            { type: "wait", milliseconds: 2000 }
-          ]
-        }, {
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${CONFIG.FIRECRAWL_API_KEY}`
-          },
-          timeout: 60000
-        })
-      );
-      
-      const retryData = retryResponse.data.data || retryResponse.data;
-      
-      if (retryData && (retryData.html || retryData.rawHtml)) {
-        const htmlContent = retryData.html || retryData.rawHtml;
-        const processedHtml = processHtmlContent(htmlContent);
-        
-        if (processedHtml.length >= minContentLength) {
-          return {
-            fullContent: processedHtml,
-            imageUrls: extractImageUrls(htmlContent),
-            videoUrls: extractVideoUrls(htmlContent)
-          };
-        }
-      }
-      
-      return null;
-    }
-
-    return {
-      fullContent: content,
-      imageUrls: extractImageUrls(html),
-      videoUrls: extractVideoUrls(html)
-    };
-  } catch (error) {
-    console.error(`콘텐츠 추출 중 오류 발생:`, error);
-    return null;
-  }
-}
-
+// HTML 콘텐츠 처리 함수
 function processHtmlContent(html: string): string {
-  return html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-    .replace(/<head\b[^<]*(?:(?!<\/head>)<[^<]*)*<\/head>/gi, '')
-    .replace(/<nav\b[^<]*(?:(?!<\/nav>)<[^<]*)*<\/nav>/gi, '')
-    .replace(/<footer\b[^<]*(?:(?!<\/footer>)<[^<]*)*<\/footer>/gi, '')
-    .replace(/<aside\b[^<]*(?:(?!<\/aside>)<[^<]*)*<\/aside>/gi, '')
-    .replace(/<header\b[^<]*(?:(?!<\/header>)<[^<]*)*<\/header>/gi, '')
-    .replace(/<form\b[^<]*(?:(?!<\/form>)<[^<]*)*<\/form>/gi, '')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/\s{2,}/g, ' ')
+  if (!html) return '';
+  
+  // HTML 태그 제거하되 일부 기본 형식은 유지
+  let content = html
+    .replace(/<\/h[1-6]>/gi, '\n\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<li>/gi, '• ')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<\/blockquote>/gi, '\n\n')
+    .replace(/<\/pre>/gi, '\n\n')
+    .replace(/<[^>]+>/g, ' ') // 나머지 태그 제거
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ') // 여러 공백을 하나로 압축
     .trim();
+  
+  return content;
 }
 
+// crawl4ai를 사용한 소스 스크래핑 함수
 async function scrapeSource(source: string, now: Date): Promise<Story[]> {
-  console.log(`처리 중인 소스: ${source}`);
-  
   try {
-    await sleep(500, CONFIG.REQUEST_DELAY);
+    console.log(`소스 스크래핑 시작: ${source}`);
     
-    const todayISO = now.toISOString().split('T')[0];
-    
-    const promptForStructured = getStructuredDataPrompt(source, todayISO, now);
-    
-    const promptForContent = getContentExtractionPrompt(source);
-    
-    const scrapeResult = await apiCallWithRetry(async () => {
-      return await app.extract([source], {
-        prompt: promptForStructured,
-        schema: StoriesSchema,
-      });
-    });
-    
-    if (!scrapeResult.success) {
-      throw new Error(`Failed to scrape: ${scrapeResult.error}`);
+    // 사용할 LLM 프로바이더 결정 (OpenAI를 기본으로 설정)
+    let llmProvider: 'openai' | 'together' | 'deepseek' = 'openai';
+    if (process.env.TOGETHER_API_KEY && process.env.TOGETHER_API_KEY !== 'your_together_api_key_here') {
+      llmProvider = 'together';
+    } else if (process.env.DEEPSEEK_API_KEY && process.env.DEEPSEEK_API_KEY.length > 10) {
+      llmProvider = 'deepseek';
     }
     
-    const todayStories = scrapeResult.data as { stories: Story[] };
+    console.log(`LLM 프로바이더 선택: ${llmProvider}`);
     
-    if (!todayStories || !todayStories.stories || todayStories.stories.length === 0) {
-      return [];
-    }
+    // 크롤링할 때 오늘 날짜의 내용만 가져오도록 지정
+    const todayDate = now.toISOString().split('T')[0];
+    console.log(`오늘 날짜(${todayDate})의 AI 관련 기사만 크롤링합니다.`);
     
-    const filteredStories: Story[] = [];
-    const limitedStories = todayStories.stories.slice(0, CONFIG.MAX_STORIES_PER_SOURCE);
+    // crawl4ai를 사용하여 웹사이트 크롤링
+    // 추가 안내 포함: 최신(오늘) 기사, AI 관련 콘텐츠만 크롤링
+    const crawlResults = await crawlWebsites(
+      [{ identifier: source }],
+      { 
+        llmProvider,
+        // 크롤러가 오늘 날짜의 AI 관련 콘텐츠에 집중하도록 메타데이터 추가
+        meta: {
+          targetDate: todayDate,
+          contentFocus: 'AI technology, machine learning, large language models, deep learning',
+          prioritizeRecent: true
+        }
+      }
+    );
     
-    for (const story of limitedStories) {
-      const isRecent = isLikelyRecent(story.date_posted);
-          
-      if (isRecent) {
-        filteredStories.push(story);
+    // 결과 가공
+    const stories: Story[] = [];
+    
+    for (const rawStory of crawlResults) {
+      // 최신 게시물만 필터링 (더 엄격한 필터링 적용)
+      if (rawStory.date_posted && isLikelyRecent(rawStory.date_posted)) {
+        const story: Story = {
+          headline: rawStory.headline,
+          link: rawStory.link,
+          date_posted: rawStory.date_posted,
+          fullContent: rawStory.fullContent,
+          imageUrls: rawStory.imageUrls || [],
+          videoUrls: rawStory.videoUrls || [],
+          popularity: rawStory.popularity || 'N/A'
+        };
         
-        if (story.link) {
+        // 임베딩 기반 고급 콘텐츠 분석 수행 (새 기능)
+        if (story.fullContent) {
           try {
-            await sleep(CONFIG.REQUEST_DELAY, CONFIG.REQUEST_DELAY * 2);
+            // 콘텐츠 길이에 따라 샘플링하되, 너무 길지 않게 제한
+            const contentForAnalysis = story.headline + "\n\n" + 
+              (story.fullContent.length > 4000 
+                ? story.fullContent.substring(0, 2000) 
+                : story.fullContent.substring(0, Math.min(2000, story.fullContent.length)));
             
-            const contentData = await getContentFromUrl(story.link);
+            console.log(`"${story.headline}" 콘텐츠에 대한 고급 카테고리 분석 수행...`);
             
-            if (contentData) {
-              story.fullContent = contentData.fullContent || '';
-              story.imageUrls = contentData.imageUrls || [];
-              story.videoUrls = contentData.videoUrls || [];
-                  
-              if (typeof storeFullContent === 'function' && story.fullContent) {
-                try {
-                  const storyId = crypto.createHash('md5').update(story.link).digest('hex');
-                  
-                  const storageResult = await storeFullContent(storyId, story.headline, story.fullContent);
-                  if (storageResult?.id) {
-                    story.content_storage_id = storageResult.id;
-                    story.content_storage_method = storageResult.method;
-                  }
-                } catch (storageError) {
-                  console.error('원문 저장 실패:', storageError);
-                }
+            // API 사용량 제한을 위한 지연 추가
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            try {
+              // 계층적 카테고리 분류 수행 (일부 오류 확인 후)
+              const categoryResult = await classifyContentHierarchically(contentForAnalysis);
+              
+              // 분석 결과 로그 출력
+              console.log(`- 메인 카테고리: ${categoryResult.mainCategory} (신뢰도: ${(categoryResult.confidence * 100).toFixed(1)}%)`);
+              if (categoryResult.subCategories.length > 0) {
+                console.log(`- 서브 카테고리: ${categoryResult.subCategories.join(', ')}`);
               }
+              if (categoryResult.topics.length > 0) {
+                console.log(`- 관련 토픽: ${categoryResult.topics.join(', ')}`);
+              }
+              
+              // 카테고리 정보 추가
+              story.category = categoryResult.mainCategory;
+              
+              // 추가 메타데이터 저장
+              story.metadata = {
+                subCategories: categoryResult.subCategories,
+                topics: categoryResult.topics,
+                confidence: categoryResult.confidence
+              };
+            } catch (analysisError) {
+              console.error(`콘텐츠 분석 오류:`, analysisError);
+              // 기본 카테고리 설정
+              story.category = getCategoryFromContent(undefined, story.fullContent);
+              
+              // 기본 메타데이터 설정
+              story.metadata = {
+                subCategories: [],
+                topics: [],
+                confidence: 0.5
+              };
             }
-          } catch (contentError) {
-            console.error(`내용 추출 중 오류 발생:`, contentError);
+          } catch (error) {
+            console.error(`콘텐츠 분석 과정 전체 오류:`, error);
+            // 기본 카테고리 설정
+            story.category = getCategoryFromContent(undefined, story.fullContent);
           }
           
-          if (!story.fullContent || story.fullContent.trim() === '') {
-            story.fullContent = story.headline;
+          // 전체 내용 저장 (필요한 경우)
+          try {
+            const contentHash = crypto.createHash('md5').update(story.fullContent).digest('hex');
+            const storageResult = await storeFullContent(contentHash, story.headline, story.fullContent);
+            
+            if (storageResult.id) {
+              story.content_storage_id = storageResult.id;
+              story.content_storage_method = storageResult.method;
+            }
+          } catch (error) {
+            console.error('콘텐츠 저장 오류:', error);
           }
         }
+        
+        stories.push(story);
       }
     }
     
-    return filteredStories;
+    // 최대 스토리 수 제한
+    return stories.slice(0, CONFIG.MAX_STORIES_PER_SOURCE);
+    
   } catch (error) {
-    console.error(`Error scraping ${source}:`, error);
+    console.error(`소스 스크래핑 오류 (${source}):`, error);
     return [];
   }
 }
 
-function getStructuredDataPrompt(source: string, todayISO: string, now: Date): string {
-  return `
-    IMPORTANT ABOUT DATES:
-    Current time: ${now.toLocaleString()}.
-    Today's date: ${todayISO}.
-    
-    MOST IMPORTANT: Don't rely on exact dates - trust the RELATIVE time indicators on the site:
-    - Words like "today", "just now", "minutes ago", "hours ago"
-    - Recent dates visible on the page
-    - Articles featured in "Latest News", "Recent Posts", or similar sections
-    - Content at the TOP of the page
-    
-    IMPORTANT ABOUT CONTENT SELECTION:
-    - Prioritize stories that appear at the TOP of the page first (these are usually most recent)
-    - If view count or popularity metrics are visible, prioritize stories with HIGHER view counts or engagement
-    - Look for featured, trending, or highlighted stories first
-    - Only include the MOST IMPORTANT and RELEVANT AI/LLM stories, maximum 5 per source
-    - Look for timestamps, publication dates, or "posted X hours ago" indicators
-    
-    IMPORTANT ABOUT EXTRACTION:
-    - We ONLY want stories published within the LAST 24 HOURS
-    - Look for these EXACT time formats and patterns:
-      * "today"
-      * "X hours ago" (e.g., "9 hours ago", "2 hours ago")
-      * "about X hours ago" (e.g., "about 9 hours ago")
-      * "X minutes ago"
-      * "just now"
-      * "1 day ago" or "a day ago" or "yesterday"
-    - Copy the EXACT date string as it appears on the page to date_posted field
-    - For Huggingface blog, pay special attention to time indicators like "1 day ago", "about 23 hours ago"
-    - If you're unsure about the exact time, include the story anyway and provide the time string
-    
-    The format should be:
-    {
-      "stories": [
-        {
-          "headline": "headline1",
-          "link": "link1",
-          "date_posted": "Copy the EXACT date/time string from the page. If none, use 'recent'",
-          "popularity": "optional popularity indicator if available (view count, likes, etc.)"
-        },
-        ...
-      ]
-    }
-    
-    IMPORTANT: Include ONLY stories published within the LAST 24 HOURS. Look for:
-    - Stories with timestamps showing "today", "yesterday", "X hours ago", "X days ago", "just now", "minutes ago"
-    - Content at the very TOP of the page with recent indicators
-    If you are unsure about the exact publication time, include it anyway and our system will verify it.
-    If you find NO clear stories published within the last few days, return empty data.
-    
-    The source link is ${source}. 
-    If a story link is not absolute, prepend ${source} to make it absolute. 
-    Return only pure JSON in the specified format.
-  `;
+/**
+ * API 요청 지연을 위한 유틸리티 함수
+ * 요청 간 일정 시간을 대기하여 속도 제한 초과를 방지합니다.
+ */
+async function delayBetweenRequests(minDelay = 3000, maxDelay = 5000): Promise<void> {
+  const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+  console.log(`요청 사이 ${delay}ms 대기 중...`);
+  return new Promise(resolve => setTimeout(resolve, delay));
 }
 
-function getContentExtractionPrompt(source: string): string {
-  return `
-    Extract the COMPLETE and FULL content, image URLs, and video URLs from this page.
-    Return as valid JSON with this structure:
-    { 
-      "fullContent": "the full article content as markdown with ALL paragraphs, sections, and formatting preserved",
-      "imageUrls": ["url1", "url2", ...],
-      "videoUrls": ["url1", "url2", ...]
-    }
-    
-    VERY IMPORTANT: 
-    1. Do NOT truncate, shorten, or summarize the fullContent. 
-    2. Preserve ALL paragraphs, line breaks, headers, and formatting of the original content exactly as they appear.
-    3. Include the ENTIRE article text, even if it is very long.
-    4. For image and video URLs:
-       - Convert ALL relative URLs to absolute ones by prepending ${new URL(source).origin} if needed
-       - Include Open Graph (og:image) and Twitter card images
-       - Include ALL article images, charts, diagrams and figures
-       - Include thumbnails for videos
-       - Extract embedded video players (YouTube, Vimeo, Twitter videos, etc.)
-       - IMPORTANT: ONLY extract images and videos that are part of the MAIN ARTICLE CONTENT
-       - DO NOT include profile pictures, logos, icons, navigation images, sidebar widgets, or advertisements
-       - Focus on extracting content images like photos, charts, graphs, diagrams, and screenshots
-    5. Remove any unnecessary metadata, navigation elements, or footer information from the content.
-    6. Make sure to properly escape any special characters in the fullContent.
-    7. Media detection:
-       - For images: Look for .jpg, .jpeg, .png, .webp, .gif, .svg files
-       - For videos: Look for .mp4, .webm, .mov files and embedded players from YouTube, Vimeo, Twitter, etc.
-       - Also extract URLs containing 'video', 'player', 'embed', 'media', etc.
-       - For YouTube videos, transform watch URLs to embed URLs where possible
-       - EXTRACT ALL HTML image tags (<img src="...">) from the article content
-       - Also look for background-image CSS properties in the article content
-    7. Return only pure JSON in the specified format.
-  `;
-}
-
+/**
+ * 소스 목록에서 스토리를 스크래핑합니다.
+ * crawl4ai를 사용하여 LLM 기반 자동 네비게이션 방식으로 크롤링합니다.
+ */
 export async function scrapeSources(
   sources: { identifier: string }[],
 ): Promise<Story[]> {
-  const now = new Date();
+  console.log("Fetching sources...");
   
-  console.log(`총 ${sources.length}개의 소스를 처리합니다.`);
-  console.log(`시스템 시간: ${now.toISOString()}`);
-
+  // 테스트 모드인 경우 첫 번째 소스만 사용
+  if (process.env.TEST_MODE === "true") {
+    console.log(`테스트용 단일 소스 사용: ${sources[0].identifier}`);
+    sources = [sources[0]];
+  }
+  
+  console.log("모든 소스 목록:", sources);
+  
+  // 스크래핑 시작 시간 기록
+  const startTime = new Date();
+  console.log(`스크래핑 시작: ${startTime.toISOString()}`);
+  
+  let allStories: Story[] = [];
+  
+  // crawl4ai 설치 확인 및 설치
+  const installed = await checkCrawl4aiInstallation();
+  if (!installed) {
+    console.log("crawl4ai가 설치되어 있지 않습니다. 설치를 시도합니다...");
+    const installSuccess = await installCrawl4ai();
+    if (!installSuccess) {
+      console.error("crawl4ai 설치 실패");
+    }
+  }
+  
+  // 현재 날짜
+  const today = new Date();
+  const todayFormatted = today.toISOString().split('T')[0];
+  
+  // 크롤링 방식 선택 (환경 변수로 제어)
+  const useDynamicCrawling = process.env.USE_DYNAMIC_CRAWLING === "true";
+  console.log(`크롤링 방식: ${useDynamicCrawling ? '동적 크롤링' : '정적 크롤링'}`);
+  
   try {
-    const allStories: Story[] = [];
-    
-    for (let i = 0; i < sources.length; i += CONFIG.BATCH_SIZE) {
-      const batch = sources.slice(i, i + CONFIG.BATCH_SIZE);
-      console.log(`소스 배치 ${Math.floor(i/CONFIG.BATCH_SIZE) + 1}/${Math.ceil(sources.length/CONFIG.BATCH_SIZE)} 처리 중 (${batch.length}개)...`);
+    if (useDynamicCrawling) {
+      // 동적 크롤링 사용
+      console.log("Playwright를 사용한 동적 크롤링 시작...");
       
-      for (const sourceObj of batch) {
-        const sourceStories = await scrapeSource(sourceObj.identifier, now);
-        allStories.push(...sourceStories);
-        
-        if (sourceObj !== batch[batch.length - 1]) {
-          await sleep(CONFIG.REQUEST_DELAY, CONFIG.REQUEST_DELAY * 1.5);
+      // 동적 크롤링 실행
+      const crawlResults = await dynamicCrawlWebsites(sources, {
+        targetDate: todayFormatted,
+        contentFocus: "AI, machine learning, artificial intelligence, neural network, large language model, LLM",
+        maxLinksPerSource: 5
+      });
+      
+      for (const story of crawlResults) {
+        // 콘텐츠 저장
+        if (story.fullContent && story.fullContent.length > 100) {
+          try {
+            // 콘텐츠 해시 생성 (파일명 용)
+            const contentHash = crypto.createHash('md5').update(story.link + story.headline).digest('hex');
+            
+            // 콘텐츠 저장
+            console.log(`원문 저장 시작: ${story.headline} (${story.fullContent.length} 바이트)`);
+            
+            // 이미 저장된 내용이 있는지 확인
+            const existingContent = await storeFullContent(
+              story.headline, 
+              story.fullContent, 
+              contentHash
+            );
+            
+            if (existingContent) {
+              console.log(`이미 저장된 콘텐츠가 있습니다: ${story.headline}`);
+            } else {
+              console.log(`원문을 데이터베이스에 저장했습니다 (${story.fullContent.length} 바이트): ${story.headline} (ID: ${contentHash})`);
+            }
+            
+            // 카테고리 분석 (완전히 새로운 콘텐츠인 경우만)
+            if (!existingContent) {
+              console.log(`"${story.headline}" 콘텐츠에 대한 고급 카테고리 분석 수행...`);
+              
+              // 계층적 카테고리 분류 함수 사용
+              const categoryResult = await classifyContentHierarchically(story.fullContent);
+              
+              // typescript 호환성을 위한 타입 확장
+              const enrichedStory: any = story;
+              enrichedStory.category = categoryResult.mainCategory;
+              enrichedStory.metadata = {
+                subCategories: categoryResult.subCategories,
+                topics: categoryResult.topics,
+                confidence: categoryResult.confidence
+              };
+              
+              console.log(`- 메인 카테고리: ${categoryResult.mainCategory} (신뢰도: ${(categoryResult.confidence * 100).toFixed(1)}%)`);
+            }
+            
+            // 스토리 추가 - 타입 안전하게 변환
+            const typedStory: Story = {
+              headline: story.headline,
+              link: story.link,
+              date_posted: story.date_posted,
+              fullContent: story.fullContent,
+              imageUrls: story.imageUrls,
+              videoUrls: story.videoUrls,
+              popularity: story.popularity,
+              content_storage_id: story.content_storage_id,
+              content_storage_method: story.content_storage_method,
+              category: (story as any).category || '연구 동향',
+              metadata: (story as any).metadata || {
+                subCategories: [],
+                topics: [],
+                confidence: 0.5
+              }
+            };
+            
+            allStories.push(typedStory);
+          } catch (storageError) {
+            console.error(`콘텐츠 저장 오류 (${story.headline}):`, storageError);
+          }
         }
       }
+    } else {
+      // 정적 크롤링 사용 (기존 코드)
+      console.log("crawl4ai를 사용한 정적 크롤링 시작...");
       
-      if (i + CONFIG.BATCH_SIZE < sources.length) {
-        await new Promise(resolve => setTimeout(resolve, CONFIG.BATCH_DELAY));
+      // crawl4ai 기반 크롤링 실행
+      const llmProvider = process.env.LLM_PROVIDER as 'openai' | 'together' | 'deepseek' || 'openai';
+      console.log(`LLM 프로바이더 선택: ${llmProvider}`);
+      
+      console.log(`오늘 날짜(${todayFormatted})의 AI 관련 기사만 크롤링합니다.`);
+      
+      const crawlResults = await crawlWebsites(sources, {
+        llmProvider,
+        batchDelay: CONFIG.BATCH_DELAY,
+        meta: {
+          targetDate: todayFormatted,
+          contentFocus: "AI news, machine learning, LLM, large language model, neural network",
+          prioritizeRecent: true
+        }
+      });
+      
+      // 결과 처리 (기존 처리 로직)
+      for (const story of crawlResults) {
+        if (story.fullContent && story.fullContent.length > 100) {
+          try {
+            // 콘텐츠 해시 생성
+            const contentHash = crypto.createHash('md5').update(story.link + story.headline).digest('hex');
+            
+            // 콘텐츠 저장
+            console.log(`원문 저장 시작: ${story.headline} (${story.fullContent.length} 바이트)`);
+            
+            // 이미 저장된 내용이 있는지 확인
+            const existingContent = await storeFullContent(
+              story.headline, 
+              story.fullContent, 
+              contentHash
+            );
+            
+            if (existingContent) {
+              console.log(`이미 저장된 콘텐츠가 있습니다: ${story.headline}`);
+            } else {
+              console.log(`원문을 데이터베이스에 저장했습니다 (${story.fullContent.length} 바이트): ${story.headline} (ID: ${contentHash})`);
+            }
+            
+            // 카테고리 분석 (완전히 새로운 콘텐츠인 경우만)
+            if (!existingContent) {
+              console.log(`"${story.headline}" 콘텐츠에 대한 고급 카테고리 분석 수행...`);
+              
+              // 계층적 카테고리 분류 함수 사용
+              const categoryResult = await classifyContentHierarchically(story.fullContent);
+              
+              // typescript 호환성을 위한 타입 확장
+              const enrichedStory: any = story;
+              enrichedStory.category = categoryResult.mainCategory;
+              enrichedStory.metadata = {
+                subCategories: categoryResult.subCategories,
+                topics: categoryResult.topics,
+                confidence: categoryResult.confidence
+              };
+              
+              console.log(`- 메인 카테고리: ${categoryResult.mainCategory} (신뢰도: ${(categoryResult.confidence * 100).toFixed(1)}%)`);
+            }
+            
+            // 스토리 추가 - 타입 안전하게 변환
+            const typedStory: Story = {
+              headline: story.headline,
+              link: story.link,
+              date_posted: story.date_posted,
+              fullContent: story.fullContent,
+              imageUrls: story.imageUrls,
+              videoUrls: story.videoUrls,
+              popularity: story.popularity,
+              content_storage_id: story.content_storage_id,
+              content_storage_method: story.content_storage_method,
+              category: (story as any).category || '연구 동향',
+              metadata: (story as any).metadata || {
+                subCategories: [],
+                topics: [],
+                confidence: 0.5
+              }
+            };
+            
+            allStories.push(typedStory);
+          } catch (storageError) {
+            console.error(`콘텐츠 저장 오류 (${story.headline}):`, storageError);
+          }
+        }
       }
     }
     
-    console.log(`모든 소스에서 총 ${allStories.length}개의 스토리를 찾았습니다.`);
+    // 주요 로그 정보 출력
+    console.log(`스크래핑 완료: 총 ${allStories.length}개의 스토리를 찾았습니다.`);
+    
+    // 총 바이트 계산
+    const totalBytes = allStories.reduce((sum, story) => {
+      return sum + (story.fullContent?.length || 0);
+    }, 0);
+    
+    console.log(`스크래핑 결과: ${allStories.length}개 스토리 (${totalBytes} 바이트)`);
+    
+    // 결과 반환
     return allStories;
   } catch (error) {
-    console.error("Error in scrapeSources:", error);
-    return [];
+    console.error("스크래핑 프로세스 오류:", error);
+    
+    // 오류 발생해도 지금까지 수집된 스토리 반환
+    return allStories;
   }
 }

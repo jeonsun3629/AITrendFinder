@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import { Client } from '@notionhq/client';
 import { BlockObjectRequest } from '@notionhq/client/build/src/api-endpoints';
 import { retrieveFullContent } from './contentStorage';
+import { OpenAI } from 'openai';
 
 dotenv.config();
 
@@ -20,24 +21,6 @@ function isValidUrl(urlString: string): boolean {
 const notion = new Client({
   auth: process.env.NOTION_API_KEY,
 });
-
-/**
- * 텍스트를 일정 길이로 제한
- */
-function truncateText(text: string | undefined, maxLength: number = 2000): string {
-  if (!text) return '';
-  
-  // 객체인 경우 문자열로 변환 시도
-  if (typeof text === 'object') {
-    try {
-      text = JSON.stringify(text);
-    } catch (e) {
-      text = String(text);
-    }
-  }
-  
-  return text?.substring(0, maxLength) || '';
-}
 
 /**
  * 배열에서 유효한 URL을 찾아 반환
@@ -95,10 +78,10 @@ async function getFullContent(item: any): Promise<string> {
       console.log(`Supabase에서 원문 가져오기 시도: ${itemIdentifier} (ID: ${storageId})`);
       
       try {
-        const fullContent = await retrieveFullContent(storageId);
-        if (fullContent) {
-          console.log(`Supabase에서 전체 원문을 가져왔습니다 (${fullContent.length} 바이트)`);
-          return fullContent;
+        const contentResult = await retrieveFullContent(storageId);
+        if (contentResult && contentResult.content_full) {
+          console.log(`Supabase에서 전체 원문을 가져왔습니다 (${contentResult.content_full.length} 바이트)`);
+          return contentResult.content_full;
         }
       } catch (storageError) {
         console.error(`Supabase 원문 가져오기 실패 (ID: ${storageId}):`, storageError);
@@ -165,25 +148,47 @@ function createRichText(content: string | any): { text: { content: string } }[] 
   }
   
   // 노션 API 텍스트 제한 (2000자)
-  const truncated = truncateText(textContent);
+  const maxLength = 2000;
   
   // 불릿 포인트가 있는 경우 각 항목을 분리하여 별도의 텍스트 항목으로 처리
-  if (truncated.includes('• ')) {
+  if (textContent.includes('• ')) {
     // 줄바꿈된 불릿 포인트를 개별 항목으로 분리
-    const bulletPoints = truncated.split('\n\n');
+    const bulletPoints = textContent.split('\n\n');
     
     if (bulletPoints.length > 1) {
       console.log(`불릿 포인트 ${bulletPoints.length}개를 각각의 텍스트 블록으로 변환합니다.`);
       
-      // 각 불릿 포인트를 별도의 rich_text 항목으로 변환
-      return bulletPoints.map(point => ({
-        text: { content: point.trim() + '\n' }
-      }));
+      // 각 불릿 포인트를 별도의 rich_text 항목으로 변환 (각 항목은 2000자 제한 준수)
+      return bulletPoints.map(point => {
+        const trimmedPoint = point.trim();
+        if (trimmedPoint.length <= maxLength) {
+          return { text: { content: trimmedPoint + '\n' } };
+        } else {
+          // 2000자 초과 시, 잘라서 반환
+          return { text: { content: trimmedPoint.substring(0, maxLength) + '\n' } };
+        }
+      });
     }
   }
   
-  // 일반 텍스트의 경우 단일 항목으로 반환
-  return [{ text: { content: truncated } }];
+  // 텍스트가 2000자 제한을 초과하는 경우 여러 청크로 나눔
+  if (textContent.length > maxLength) {
+    console.log(`텍스트가 노션 제한(${maxLength}자)을 초과합니다. 길이: ${textContent.length}자. 여러 청크로 분할합니다.`);
+    
+    const chunks: { text: { content: string } }[] = [];
+    // 2000자씩 잘라서 여러 개의 리치 텍스트 항목으로 분할
+    for (let i = 0; i < textContent.length; i += maxLength) {
+      chunks.push({
+        text: { content: textContent.substring(i, Math.min(i + maxLength, textContent.length)) }
+      });
+    }
+    
+    console.log(`총 ${chunks.length}개의 텍스트 청크로 분할됨`);
+    return chunks;
+  }
+  
+  // 일반 텍스트이면서 제한 내인 경우 단일 항목으로 반환
+  return [{ text: { content: textContent } }];
 }
 
 /**
@@ -253,46 +258,123 @@ async function sendDraftToSlack(draft_post: string) {
 
 async function sendDraftToNotion(draft: { draft_post: string, translatedContent: any[] }) {
   try {
-    // 스토리를 파싱하여 각 항목을 분리
-    const titleMatch = draft.draft_post.match(/🚀 AI 및 LLM 트렌드 \((.*?)\)\n\n/);
-    const title = titleMatch ? titleMatch[1] : new Date().toLocaleDateString();
     
-    // Notion 데이터베이스 스키마 확인 시도
+    // Notion 클라이언트 초기화
+    const notion = new Client({
+      auth: process.env.NOTION_API_KEY,
+    });
+    
+    const now = new Date();
+    now.setHours(now.getHours() + 9); // KST 시간으로 조정 (UTC+9)
+    const koreaDateStr = now.toISOString().split('T')[0];
+    console.log(`현재 한국 날짜로 설정: ${koreaDateStr}`);
+    
+    // 데이터베이스 확인
     try {
       const databaseId = process.env.NOTION_DATABASE_ID || '';
-      console.log(`Notion 데이터베이스 확인 시도 (ID: ${databaseId})`);
+      console.log(`Notion 데이터베이스 확인 시도 (ID: ${databaseId.substring(0, 32)})`);
       
-      const { properties } = await notion.databases.retrieve({
+      const database = await notion.databases.retrieve({
         database_id: databaseId
       });
       
-      console.log('Notion 데이터베이스 필드 목록:');
-      Object.keys(properties).forEach(propertyName => {
-        console.log(`- ${propertyName} (${properties[propertyName].type})`);
-      });
-    } catch (schemaError) {
-      console.error('Notion 데이터베이스 스키마 확인 실패:', schemaError);
+      // 데이터베이스 필드 확인
+      console.log(`Notion 데이터베이스 필드 목록:`);
+      const properties = database.properties;
+      for (const key in properties) {
+        console.log(`- ${key} (${properties[key].type})`);
+      }
+    } catch (dbError) {
+      console.error('Notion 데이터베이스 확인 오류:', dbError);
     }
     
-    // 번역된 콘텐츠 항목들 사용
-    for (const item of draft.translatedContent) {
-      if (!item.translated && !item.original) continue;
+    console.log(`Notion에 총 ${draft.translatedContent.length}개의 페이지를 생성합니다.`);
+    
+    // API 속도 제한을 고려한 Notion 페이지 생성 지연 함수
+    const createNotionPageWithDelay = async (item: any, index: number): Promise<void> => {
+      // 이전 요청과의 간격을 위한 지연 (첫 번째 요청 제외)
+      if (index > 0) {
+        // 1-3초 랜덤 지연
+        const delay = 1000 + Math.random() * 2000;
+        console.log(`Notion API 요청 간 ${Math.round(delay)}ms 대기 중...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+      
+      // 제목 정보 추출 및 유효성 검증
+      let title = '무제';
+      if (typeof item.title_ko === 'string' && item.title_ko.trim()) {
+        title = item.title_ko.trim();
+      } else if (typeof item.title_ko === 'object' && item.title_ko?.text) {
+        title = String(item.title_ko.text).trim();
+      } else if (typeof item.translated === 'string' && item.translated.trim()) {
+        title = item.translated.trim().split('\n')[0].substring(0, 100);
+      } else if (typeof item.original === 'string' && item.original.trim()) {
+        title = item.original.trim().split('\n')[0].substring(0, 100);
+      }
+      
+      console.log(`Notion에 페이지 생성 중: ${title}`);
+      
+      // 요약 내용 로깅
+      if (item.summary_ko) {
+        console.log(`Summary_ko 내용 길이: ${item.summary_ko.length}바이트`);
+      }
+      
+      if (item.content_full_kr) {
+        console.log(`content_full_kr 내용 길이: ${item.content_full_kr.length}바이트`);
+      }
+      
+      // 원문 콘텐츠 확인
+      let fullContent = '';
+      console.log(`원문 내용 길이: ${fullContent.length}바이트`);
+      
+      // Supabase에서 원문 가져오기
+      if (item.supabase_id) {
+        try {
+          console.log(`Supabase에서 원문 가져오기 시도: ${title} (ID: ${item.supabase_id})`);
+          const contentResult = await retrieveFullContent(item.supabase_id);
+          if (contentResult && contentResult.content_full) {
+            fullContent = contentResult.content_full;
+            console.log(`Supabase에서 전체 원문을 가져왔습니다 (${fullContent.length} 바이트)`);
+          }
+        } catch (error) {
+          console.error(`Supabase에서 콘텐츠 가져오기 오류 (${item.supabase_id}):`, error);
+        }
+      } else if (item.content_storage_id) {
+        try {
+          console.log(`Supabase에서 원문 가져오기 시도: ${title} (ID: ${item.content_storage_id})`);
+          const contentResult = await retrieveFullContent(item.content_storage_id);
+          if (contentResult && contentResult.content_full) {
+            fullContent = contentResult.content_full;
+            console.log(`Supabase에서 전체 원문을 가져왔습니다 (${fullContent.length} 바이트)`);
+          }
+        } catch (error) {
+          console.error(`Supabase에서 콘텐츠 가져오기 오류 (${item.content_storage_id}):`, error);
+        }
+      }
+      
+      // 원문이 2000자를 초과하는 경우 처리
+      if (fullContent.length > 2000) {
+        console.log(`원문 전체 내용 길이: ${fullContent.length}바이트 (2000자 초과, 분할 필요)`);
+        // 선택적으로 2000자로 자름 - 콘텐츠 요약 방식에 따라 조정
+        fullContent = fullContent.substring(0, 2000);
+      }
       
       // 블록 생성
       const blocks: BlockObjectRequest[] = [];
       
-      // 번역된 내용 추가
-      blocks.push(createParagraphBlock(item.translated || item.original));
-      
-      // 원문이 있고 번역도 있는 경우 원문도 추가
-      if (item.original && item.translated) {
-        blocks.push(createParagraphBlock('원문: ' + item.original));
+      // 불릿 포인트 형식의 content_full_kr를 개별 블록으로 추가
+      // 10개 불릿 포인트 생성 (콘텐츠에서 자동 생성)
+      // Supabase에서 가져온 원문 내용으로부터 불릿 포인트 형식 생성
+      if (!item.content_full_kr && fullContent) {
+        try {
+          console.log("원문에서 10개의 핵심 요약 불릿 포인트 생성 중...");
+          item.content_full_kr = await generateBulletPointsFromContent(fullContent, 10);
+        } catch (bulletError) {
+          console.error("불릿 포인트 생성 오류:", bulletError);
+          item.content_full_kr = '';
+        }
       }
       
-      // 링크 추가
-      blocks.push(createParagraphBlock(item.link || '', item.link));
-      
-      // 불릿 포인트 형식의 content_full_kr를 개별 블록으로 추가
       if (item.content_full_kr && item.content_full_kr.includes('• ')) {
         // 구분선 추가
         blocks.push({
@@ -325,22 +407,42 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
         
         console.log(`불릿 포인트 항목 ${bulletPoints.length}개를 블록으로 변환합니다:`);
         bulletPoints.forEach((point: string, index: number) => {
-          console.log(`  ${index + 1}. ${point.substring(0, 50)}...`);
+          if (index < 10) { // 최대 10개 불릿 포인트만 표시
+            console.log(`  ${index + 1}. ${point.substring(0, 50)}...`);
+          }
         });
         
-        // 각 불릿 포인트를 개별 블록으로 추가
-        bulletPoints.forEach((point: string) => {
+        // 각 불릿 포인트를 개별 블록으로 추가 (최대 10개)
+        const limitedBulletPoints = bulletPoints.slice(0, 10);
+        limitedBulletPoints.forEach((point: string) => {
           const content = point.startsWith('• ') ? point.substring(2).trim() : point;
-          blocks.push({
-            object: "block",
-            type: "bulleted_list_item",
-            bulleted_list_item: {
-              rich_text: [{ 
-                type: "text", 
-                text: { content }
-              }]
-            }
-          });
+          
+          // 불릿 포인트가 2000자를 초과하는 경우 처리
+          if (content.length > 2000) {
+            // 첫 번째 블록은 불릿 리스트 아이템으로 (2000자로 제한)
+            blocks.push({
+              object: "block",
+              type: "bulleted_list_item",
+              bulleted_list_item: {
+                rich_text: [{ 
+                  type: "text", 
+                  text: { content: content.substring(0, 2000) }
+                }]
+              }
+            });
+          } else {
+            // 2000자 이하인 경우 단일 블록
+            blocks.push({
+              object: "block",
+              type: "bulleted_list_item",
+              bulleted_list_item: {
+                rich_text: [{ 
+                  type: "text", 
+                  text: { content }
+                }]
+              }
+            });
+          }
         });
         
         // 구분선 추가
@@ -369,8 +471,8 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
           }
         });
         
-        // 각 이미지 URL을 개별 블록으로 추가
-        imageUrls.forEach((imgUrl, index) => {
+        // 각 이미지 URL을 개별 블록으로 추가 (최대 3개)
+        imageUrls.slice(0, 3).forEach((imgUrl, index) => {
           blocks.push({
             object: "block",
             type: "paragraph",
@@ -398,7 +500,7 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
       // 비디오 URL 추가 (최대 3개)
       const videoUrls = getMultipleValidUrls(item.video_url);
       if (videoUrls.length > 0) {
-        // 비디오 헤더 추가 (이미지가 없을 경우 구분선 추가)
+        // 이미지가 없었다면 구분선 추가
         if (imageUrls.length === 0) {
           blocks.push({
             object: "block",
@@ -415,8 +517,8 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
           }
         });
         
-        // 각 비디오 URL을 개별 블록으로 추가
-        videoUrls.forEach((videoUrl, index) => {
+        // 각 비디오 URL을 개별 블록으로 추가 (최대 3개)
+        videoUrls.slice(0, 3).forEach((videoUrl, index) => {
           blocks.push({
             object: "block",
             type: "paragraph",
@@ -441,18 +543,6 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
         });
       }
       
-      // 노션에 페이지 생성 요청 전 로깅
-      console.log(`Notion에 페이지 생성 중: ${typeof item.title_ko === 'string' ? item.title_ko : '무제'}`);
-      
-      // 실제 전송될 항목의 요약 정보 로깅
-      console.log(`Summary_ko 내용 길이: ${(item.summary_ko || '').length}바이트`);
-      console.log(`content_full_kr 내용 길이: ${(item.content_full_kr || '').length}바이트`);
-      
-      // 한국 시간(KST)으로 현재 날짜 생성
-      const koreaTime = new Date(new Date().getTime() + (9 * 60 * 60 * 1000));
-      const koreaDateStr = koreaTime.toISOString().split('T')[0];
-      console.log(`현재 한국 날짜로 설정: ${koreaDateStr}`);
-      
       try {
         await notion.pages.create({
           parent: {
@@ -463,13 +553,7 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
               title: [
                 {
                   text: {
-                    content: typeof item.title_ko === 'string' 
-                      ? item.title_ko 
-                      : typeof item.title_ko === 'object' && item.title_ko?.text 
-                        ? String(item.title_ko.text) 
-                        : typeof item.translated === 'string' 
-                          ? item.translated 
-                          : String(item.original || '무제'),
+                    content: title,
                   },
                 },
               ],
@@ -491,10 +575,10 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
               }
             },
             Content_full: {
-              rich_text: createRichText(truncateText(await getFullContent(item)))
+              rich_text: createRichText(fullContent.substring(0, 2000))
             },
             Content_full_kr: {
-              rich_text: createRichText(item.content_full_kr || '')
+              rich_text: createRichText(item.content_full_kr ? item.content_full_kr.substring(0, 2000) : '')
             },
             Image_URL: {
               url: getValidUrlFromArray(item.image_url, "https://example.com/placeholder-image.jpg")
@@ -506,22 +590,108 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
           children: blocks,
         });
         
-        console.log(`페이지 생성 성공: ${typeof item.title_ko === 'string' ? item.title_ko : '무제'}`);
+        console.log(`페이지 생성 성공: ${title}`);
+      } catch (notionError) {
+        console.error(`Notion 페이지 생성 오류 (${title}):`, notionError);
+        throw notionError;
+      }
+    };
+    
+    // 순차적으로 페이지 생성 (병렬 처리 대신)
+    for (let i = 0; i < draft.translatedContent.length; i++) {
+      const item = draft.translatedContent[i];
+      if (!item.translated && !item.original) continue;
+      
+      try {
+        await createNotionPageWithDelay(item, i);
       } catch (pageError) {
-        console.error('Notion 페이지 생성 실패:', pageError);
-        console.error('오류 발생한 항목:', JSON.stringify({
-          title: item.title_ko,
-          summary: (item.summary_ko || '').substring(0, 50) + '...',
-          link: item.link
-        }));
-        throw pageError;
+        console.error(`페이지 #${i+1} 생성 실패:`, pageError);
+        // 오류가 발생해도 다음 페이지 생성 시도
+        continue;
       }
     }
-
+    
     return `Success sending ${draft.translatedContent.length} trends to Notion at ${new Date().toISOString()}`;
   } catch (error) {
-    console.log('Error sending draft to Notion');
-    console.error(error);
+    console.error('노션 데이터베이스 업데이트 오류:', error);
+    throw error;
+  }
+}
+
+/**
+ * 원문에서 불릿 포인트 요약 생성
+ * 
+ * @param content 원본 콘텐츠 텍스트
+ * @param numPoints 생성할 불릿 포인트 개수
+ * @returns 불릿 포인트 형식의 요약
+ */
+async function generateBulletPointsFromContent(content: string, numPoints: number = 10): Promise<string> {
+  try {
+    // 콘텐츠가 너무 길면 중요 부분만 추출 (시작 부분과 끝 부분)
+    let processedContent = content;
+    if (content.length > 10000) {
+      const firstPart = content.substring(0, 4000);
+      const lastPart = content.substring(content.length - 4000);
+      processedContent = `${firstPart}\n...\n${lastPart}`;
+    }
+    
+    // OpenAI 클라이언트 초기화
+    const client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY as string,
+    });
+    
+    // 재시도 로직과 함께 API 호출
+    const maxRetries = 3;
+    let retryCount = 0;
+    
+    while (retryCount < maxRetries) {
+      try {
+        // 지연 시간 설정
+        if (retryCount > 0) {
+          const delayMs = Math.pow(2, retryCount) * 1000;
+          console.log(`API 재시도 전 ${delayMs}ms 대기 중...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+        
+        const response = await client.chat.completions.create({
+          model: "gpt-3.5-turbo", // GPT-4 대신 더 경제적인 모델 사용
+          messages: [
+            {
+              role: "system",
+              content: "당신은 텍스트를 짧고 명확한 불릿 포인트로 요약하는 전문가입니다."
+            },
+            {
+              role: "user",
+              content: `다음 텍스트의 핵심 내용을 ${numPoints}개의 명확하고 간결한 불릿 포인트로 요약해주세요. 각 불릿 포인트는 '• '로 시작하고 최대 2-3문장으로 제한해주세요.\n\n${processedContent}`
+            }
+          ],
+          temperature: 0.3,
+          max_tokens: 1500 // 응답 길이 제한
+        });
+        
+        const bulletPoints = response.choices[0]?.message.content?.trim() || '';
+        console.log(`${numPoints}개의 불릿 포인트 생성 완료`);
+        return bulletPoints;
+        
+      } catch (error: any) {
+        retryCount++;
+        if (error.response?.status === 429) {
+          console.warn(`API 속도 제한 초과 (재시도 ${retryCount}/${maxRetries})`);
+        } else {
+          console.error(`불릿 포인트 생성 오류 (재시도 ${retryCount}/${maxRetries}):`, error);
+        }
+        
+        // 마지막 시도였는데 실패한 경우
+        if (retryCount >= maxRetries) {
+          throw error;
+        }
+      }
+    }
+    
+    // 이 코드에 도달하지 않지만, TypeScript 컴파일러를 위한 반환값
+    return '';
+  } catch (error) {
+    console.error('불릿 포인트 생성 중 오류:', error);
     throw error;
   }
 }
