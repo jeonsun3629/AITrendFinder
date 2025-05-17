@@ -20,11 +20,11 @@ export async function getCronSources(): Promise<{ identifier: string }[]> {
       // { identifier: "https://www.anthropic.com/news" },
 
       // // // // 뉴스
-      // { identifier: "https://www.reuters.com/technology/artificial-intelligence/" },
+      { identifier: "https://www.reuters.com/technology/artificial-intelligence/" },
 
       // // 블로그
       { identifier: "https://news.ycombinator.com/" },
-      // { identifier: "https://simonwillison.net/" },
+      { identifier: "https://simonwillison.net/" },
       // { identifier: "https://buttondown.com/ainews/archive/" },
     ];
 
