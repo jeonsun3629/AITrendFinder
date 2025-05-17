@@ -208,9 +208,9 @@ export async function storeFullContent(
  * 저장된 원문 검색
  * 
  * @param storyId 스토리 ID
- * @returns 원문 내용 또는 null
+ * @returns 저장된 콘텐츠 정보 또는 null
  */
-export async function retrieveFullContent(storyId: string): Promise<string | null> {
+export async function retrieveFullContent(storyId: string): Promise<ContentStorageItem | null> {
   // Supabase가 설정되지 않은 경우
   if (!isSupabaseConfigured) {
     console.log('Supabase가 설정되지 않아 콘텐츠 검색을 건너뜁니다.');
@@ -325,9 +325,11 @@ export async function retrieveFullContent(storyId: string): Promise<string | nul
       }
       
       // 데이터베이스에서 콘텐츠 반환
-      if (contentData && contentData.content_full) {
-        console.log(`데이터베이스에서 원문 콘텐츠를 찾았습니다 (${contentData.content_full.length} 바이트)`);
-        return contentData.content_full;
+      if (contentData) {
+        if (contentData.content_full) {
+          console.log(`데이터베이스에서 원문 콘텐츠를 찾았습니다 (${contentData.content_full.length} 바이트)`);
+        }
+        return contentData;
       }
       
       // 콘텐츠를 찾지 못한 경우

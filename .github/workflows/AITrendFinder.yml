@@ -19,15 +19,41 @@ jobs:
           node-version: '18'
           cache: 'npm'
 
-      - name: 종속성 설치
+      - name: Python 설정
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Playwright 브라우저 캐시 복원
+        id: playwright-cache
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Playwright 및 브라우저 설치
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: |
+          pip install playwright
+          python -m playwright install chromium
+
+      - name: Crawl4AI 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install git+https://github.com/unclecode/crawl4ai.git
+
+      - name: Node.js 종속성 설치
         run: npm ci
 
       - name: Trend Finder 실행
         env:
+          TZ: 'Asia/Seoul'  # 시간대 설정 추가
           TOGETHER_API_KEY: ${{ secrets.TOGETHER_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
           X_API_BEARER_TOKEN: ${{ secrets.X_API_BEARER_TOKEN }}
           NOTIFICATION_DRIVER: "notion"
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -36,6 +62,7 @@ jobs:
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          USE_DYNAMIC_CRAWLING: "true"
         run: |
           node -r ts-node/register src/index.ts
           # 프로세스 종료를 위해 exit 추가
