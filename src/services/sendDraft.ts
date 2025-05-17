@@ -256,6 +256,70 @@ async function sendDraftToSlack(draft_post: string) {
   }
 }
 
+/**
+ * 마크다운이나 HTML 형식의 텍스트를 정리하여 간결한 요약으로 변환
+ * @param text 정리할 텍스트
+ * @returns 정리된 텍스트
+ */
+function cleanSummaryText(text: string | any): string {
+  if (!text) return '';
+  
+  let cleanText = '';
+  
+  try {
+    // 객체를 문자열로 변환
+    if (typeof text !== 'string') {
+      cleanText = String(text);
+    } else {
+      cleanText = text;
+    }
+    
+    // 제목 형식 마크다운/HTML 제거 (# 또는 <h1>, <h2> 등)
+    cleanText = cleanText.replace(/^#+\s+/gm, ''); // 마크다운 제목 포맷 제거
+    cleanText = cleanText.replace(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/gi, '$1'); // HTML 제목 태그 제거
+    
+    // 링크 제거하고 텍스트만 보존
+    cleanText = cleanText.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // 마크다운 링크 제거
+    cleanText = cleanText.replace(/<a[^>]*>(.*?)<\/a>/gi, '$1'); // HTML 링크 태그 제거
+    
+    // 기타 HTML 태그 제거
+    cleanText = cleanText.replace(/<[^>]*>/g, '');
+    
+    // 강조 기호 제거 (* 또는 _)
+    cleanText = cleanText.replace(/(\*\*|__)(.*?)(\*\*|__)/g, '$2'); // 볼드체 제거
+    cleanText = cleanText.replace(/(\*|_)(.*?)(\*|_)/g, '$2'); // 이탤릭체 제거
+    
+    // 특수 기호 및 코드 블록 제거
+    cleanText = cleanText.replace(/```[^`]*```/g, ''); // 코드 블록 제거
+    cleanText = cleanText.replace(/`([^`]+)`/g, '$1'); // 인라인 코드 제거
+    
+    // 불필요한 공백 및 빈 줄 정리
+    cleanText = cleanText.replace(/\n{3,}/g, '\n\n'); // 3개 이상의 연속 줄바꿈을 2개로 줄임
+    cleanText = cleanText.replace(/\s+/g, ' '); // 연속된 공백을 하나로 줄임
+    
+    // 문단 구분자(구독하기, 날짜 등) 제거
+    cleanText = cleanText.replace(/구독하기|Subscribe|\\d{4}년 \\d{1,2}월 \\d{1,2}일/g, '');
+    
+    // 텍스트를 문장 단위로 분할하고 첫 3-4문장만 유지 (3-4문장 요약)
+    const sentences = cleanText.split(/[.!?]\s+/).filter(s => s.trim().length > 0);
+    if (sentences.length > 4) {
+      cleanText = sentences.slice(0, 4).join('. ') + '.';
+    } else {
+      cleanText = sentences.join('. ') + (cleanText.endsWith('.') ? '' : '.');
+    }
+    
+    // 앞뒤 공백 제거
+    cleanText = cleanText.trim();
+    
+  } catch (error) {
+    console.error('요약 텍스트 정리 중 오류 발생:', error);
+    // 오류 발생 시 원본 반환
+    return typeof text === 'string' ? text : '';
+  }
+  
+  return cleanText;
+}
+
 async function sendDraftToNotion(draft: { draft_post: string, translatedContent: any[] }) {
   try {
     
@@ -317,6 +381,9 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
       // 요약 내용 로깅
       if (item.summary_ko) {
         console.log(`Summary_ko 내용 길이: ${item.summary_ko.length}바이트`);
+        // 정리된 요약 내용 로깅
+        const cleanedSummary = cleanSummaryText(item.summary_ko);
+        console.log(`정리된 요약 내용 (${cleanedSummary.length}바이트): ${cleanedSummary.substring(0, 50)}...`);
       }
       
       if (item.content_full_kr) {
@@ -564,7 +631,7 @@ async function sendDraftToNotion(draft: { draft_post: string, translatedContent:
               },
             },
             Summary_kr: {
-              rich_text: createRichText(item.summary_ko || '')
+              rich_text: createRichText(cleanSummaryText(item.summary_ko || ''))
             },
             URL: {
               url: item.link || null,
