@@ -107,8 +107,13 @@ def is_relevant_date(date_str: str, target_date: Optional[str] = None) -> bool:
         target = datetime.strptime(target_date, '%Y-%m-%d').date()
         content_date = datetime.strptime(parsed_date, '%Y-%m-%d').date()
         
-        # 대상 날짜 또는 그 이후의 콘텐츠만 포함
-        return content_date >= target
+        # 대상 날짜로부터 3일 이내의 콘텐츠 포함
+        delta = content_date - target
+        days_diff = delta.days
+        
+        # 대상 날짜부터 미래 방향으로 3일, 과거 방향으로 0일
+        # 즉, target_date가 과거일 경우(예: 어제) 어제부터 미래 3일까지 포함
+        return -1 <= days_diff <= 3
     except:
         # 날짜 비교 실패 시 포함 (안전성)
         return True

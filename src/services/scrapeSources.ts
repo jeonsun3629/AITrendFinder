@@ -198,7 +198,7 @@ function isLikelyRecent(dateString: string): boolean {
     const unit = timeMatch[2].toLowerCase();
     
     if (unit.includes('hour') || unit.includes('시간') || unit === 'h') {
-      return amount <= 24;
+      return amount <= 36; // 24시간에서 36시간으로 확장
     }
     
     if (unit.includes('minute') || unit.includes('분') || unit === 'm') {
@@ -206,14 +206,14 @@ function isLikelyRecent(dateString: string): boolean {
     }
     
     if (unit.includes('day') || unit.includes('일') || unit === 'd') {
-      return amount <= 2;
+      return amount <= 3; // 2일에서 3일로 확장
     }
   }
   
   const oldKeywords = [
     'last week', 'last month', 'last year', 
     '지난주', '지난달', '작년', 
-    '3 days ago', '4 days ago', '5 days ago'
+    '4 days ago', '5 days ago', '6 days ago', '7 days ago'
   ];
   
   if (oldKeywords.some(keyword => dateLower.includes(keyword))) {
@@ -235,7 +235,7 @@ function isLikelyRecent(dateString: string): boolean {
       const timeDiff = now.getTime() - date.getTime();
       const hoursDiff = timeDiff / (1000 * 60 * 60);
       
-      if (hoursDiff <= 24 && hoursDiff >= -24) {
+      if (hoursDiff <= 36 && hoursDiff >= -36) {
         return true;
       }
     }
@@ -283,9 +283,12 @@ async function scrapeSource(source: string, now: Date): Promise<Story[]> {
     
     console.log(`LLM 프로바이더 선택: ${llmProvider}`);
     
-    // 크롤링할 때 오늘 날짜의 내용만 가져오도록 지정
+    // 크롤링할 때 24시간 이내의 내용을 가져오도록 지정
     const todayDate = now.toISOString().split('T')[0];
-    console.log(`오늘 날짜(${todayDate})의 AI 관련 기사만 크롤링합니다.`);
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayDate = yesterday.toISOString().split('T')[0];
+    console.log(`최근 24시간(${yesterdayDate} ~ ${todayDate}) 내의 AI 관련 기사를 크롤링합니다.`);
     
     // crawl4ai를 사용하여 웹사이트 크롤링
     // 추가 안내 포함: 최신(오늘) 기사, AI 관련 콘텐츠만 크롤링
@@ -295,7 +298,7 @@ async function scrapeSource(source: string, now: Date): Promise<Story[]> {
         llmProvider,
         // 크롤러가 오늘 날짜의 AI 관련 콘텐츠에 집중하도록 메타데이터 추가
         meta: {
-          targetDate: todayDate,
+          targetDate: yesterdayDate,
           contentFocus: 'AI technology, machine learning, large language models, deep learning',
           prioritizeRecent: true
         }
@@ -442,9 +445,12 @@ export async function scrapeSources(
     }
   }
   
-  // 현재 날짜
+  // 현재 날짜와 어제 날짜 설정 (24시간 이내 기사 크롤링용)
   const today = new Date();
   const todayFormatted = today.toISOString().split('T')[0];
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayFormatted = yesterday.toISOString().split('T')[0];
   
   // 크롤링 방식 선택 (환경 변수로 제어)
   const useDynamicCrawling = process.env.USE_DYNAMIC_CRAWLING === "true";
@@ -457,7 +463,7 @@ export async function scrapeSources(
       
       // 동적 크롤링 실행
       const crawlResults = await dynamicCrawlWebsites(sources, {
-        targetDate: todayFormatted,
+        targetDate: yesterdayFormatted, // 어제 날짜로 설정하여 24시간 이내 기사 포함
         contentFocus: "AI, machine learning, artificial intelligence, neural network, large language model, LLM",
         maxLinksPerSource: 5
       });
@@ -537,13 +543,13 @@ export async function scrapeSources(
       const llmProvider = process.env.LLM_PROVIDER as 'openai' | 'together' | 'deepseek' || 'openai';
       console.log(`LLM 프로바이더 선택: ${llmProvider}`);
       
-      console.log(`오늘 날짜(${todayFormatted})의 AI 관련 기사만 크롤링합니다.`);
+      console.log(`최근 24시간(${yesterdayFormatted} ~ ${todayFormatted}) 내의 AI 관련 기사를 크롤링합니다.`);
       
       const crawlResults = await crawlWebsites(sources, {
         llmProvider,
         batchDelay: CONFIG.BATCH_DELAY,
         meta: {
-          targetDate: todayFormatted,
+          targetDate: yesterdayFormatted, // 어제 날짜로 설정하여 24시간 이내 기사 포함
           contentFocus: "AI news, machine learning, LLM, large language model, neural network",
           prioritizeRecent: true
         }
