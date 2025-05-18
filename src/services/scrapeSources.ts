@@ -176,65 +176,87 @@ interface ContentData {
 
 function isLikelyRecent(dateString: string): boolean {
   if (!dateString || dateString.trim() === '') {
+    console.warn(`날짜 문자열이 비어있어 최신 게시물로 간주하지 않음`);
     return false;
   }
   
   const dateLower = dateString.toLowerCase();
+  console.log(`날짜 문자열 "${dateString}" 최신성 검사 중...`);
   
   // 1. 명시적으로 최근 시간을 나타내는 키워드 확인 (더 많은 키워드 추가)
   const recentTimeKeywords = [
     'today', 'hours ago', 'minutes ago', 'just now', 'hour ago', 'min ago', 'mins ago',
-    '시간 전', '분 전', '방금', 'yesterday', 'a day ago', '1 day ago', 'about 1 hour ago'
+    '시간 전', '분 전', '방금', 'an hour ago', 'a minute ago', 'a few minutes ago'
   ];
   
   if (recentTimeKeywords.some(keyword => dateLower.includes(keyword))) {
+    console.log(`"${dateString}"는 최근 시간 키워드(${recentTimeKeywords.find(k => dateLower.includes(k))})를 포함하여 최신으로 간주함`);
     return true;
   }
   
-  // 2. "X minutes/hours/days ago" 패턴 매칭 (정규식 개선)
-  const timePattern = /(\d+)\s*(hour|hours|minute|minutes|day|days|시간|분|일|h|m|d)\s*(ago|전)?/i;
+  // 2. "X days ago" 패턴 매칭을 더 엄격하게 처리
+  const daysAgoPattern = /(\d+)\s*days?\s*ago/i;
+  const daysAgoMatch = dateLower.match(daysAgoPattern);
+  
+  if (daysAgoMatch) {
+    const days = parseInt(daysAgoMatch[1]);
+    console.log(`"${dateString}" - ${days}일 전으로 파싱됨`);
+    // 1일 이내만 최근으로 간주 (어제까지만)
+    const isRecent = days <= 1;
+    console.log(`"${dateString}"는 ${days}일 전이므로 ${isRecent ? '최신으로 간주' : '최신이 아님'}`);
+    return isRecent;
+  }
+  
+  // 3. "yesterday" 처리
+  if (dateLower.includes('yesterday')) {
+    console.log(`"${dateString}"는 'yesterday'를 포함하여 최신으로 간주함 (1일 이내)`);
+    return true;
+  }
+  
+  // 4. "X minutes/hours ago" 패턴 매칭 (정규식 개선)
+  const timePattern = /(\d+)\s*(hour|hours|minute|minutes|시간|분|h|m)\s*(ago|전)?/i;
   const timeMatch = dateLower.match(timePattern);
   
   if (timeMatch) {
     const amount = parseInt(timeMatch[1]);
     const unit = timeMatch[2].toLowerCase();
     
-    // 시간 단위 (24-36시간 내로 제한)
+    // 시간 단위 (24시간 내로 제한)
     if (unit.includes('hour') || unit.includes('시간') || unit === 'h') {
-      return amount <= 36; // 36시간까지만 허용
+      const isRecent = amount <= 24;
+      console.log(`"${dateString}"는 ${amount}시간 전이므로 ${isRecent ? '최신으로 간주' : '최신이 아님'}`);
+      return isRecent; // 24시간까지만 허용
     }
     
     // 분 단위는 항상 최근으로 간주
     if (unit.includes('minute') || unit.includes('min') || unit.includes('분') || unit === 'm') {
+      console.log(`"${dateString}"는 ${amount}분 전이므로 최신으로 간주함`);
       return true;
-    }
-    
-    // 일 단위 제한
-    if (unit.includes('day') || unit.includes('일') || unit === 'd') {
-      return amount <= 1; // 1일(어제)까지만 허용
     }
   }
   
-  // 3. 오래된 콘텐츠 키워드 확인 (최근 24시간 이전 콘텐츠 제외)
+  // 5. 오래된 콘텐츠 키워드 명시적 체크
   const oldKeywords = [
     'last month', 'last year', 'last week',
-    '지난달', '작년', '지난주',
+    '지난달', '작년', '지난주', '지난 달', '지난 해',
     '2 days ago', '3 days ago', '4 days ago', '5 days ago', 'weeks ago'
   ];
   
   if (oldKeywords.some(keyword => dateLower.includes(keyword))) {
+    console.log(`"${dateString}"는 오래된 콘텐츠로 판별됨 (${oldKeywords.find(k => dateLower.includes(k))})`);
     return false;
   }
   
-  // 4. 오늘 날짜 포함 확인
+  // 6. 오늘 날짜 포함 확인 (더 엄격하게)
   const today = new Date();
-  const todayStr = today.toISOString().split('T')[0];
+  const todayStr = today.toISOString().split('T')[0]; // YYYY-MM-DD
   
   if (dateLower.includes(todayStr)) {
+    console.log(`"${dateString}"는 오늘 날짜(${todayStr})를 포함하여 최신으로 간주함`);
     return true;
   }
   
-  // 5. 실제 날짜 비교 (시간 범위 확장)
+  // 7. 실제 날짜 비교 (시간 범위 제한)
   try {
     const date = new Date(dateString);
     
@@ -243,16 +265,18 @@ function isLikelyRecent(dateString: string): boolean {
       const timeDiff = now.getTime() - date.getTime();
       const hoursDiff = timeDiff / (1000 * 60 * 60);
       
-      // 시간 범위를 24시간으로 제한 (약간의 여유 포함)
-      if (hoursDiff <= 36 && hoursDiff >= -12) {
-        return true;
-      }
+      // 시간 범위를 24시간으로 명확히 제한
+      const isRecent = hoursDiff <= 24;
+      console.log(`"${dateString}"는 ${hoursDiff.toFixed(1)}시간 전으로, ${isRecent ? '24시간 이내로 최신' : '24시간 초과하여 제외됨'}`);
+      return isRecent;
     }
-  } catch (e) {
-    // 날짜 파싱 실패는 무시
+  } catch (error) {
+    console.error(`날짜 파싱 오류 (${dateString}):`, error);
   }
   
-  return false;
+  // 8. 판별 불가능한 경우 로그 추가하고 보수적으로 접근 (제외)
+  console.warn(`날짜 판별 불가: "${dateString}" - 최신 게시물로 간주하지 않음`);
+  return false; // 판별 불가능한 경우 보수적으로 접근 (제외)
 }
 
 // HTML 콘텐츠 처리 함수
@@ -426,7 +450,7 @@ async function delayBetweenRequests(minDelay = 3000, maxDelay = 5000): Promise<v
  * crawl4ai를 사용하여 LLM 기반 자동 네비게이션 방식으로 크롤링합니다.
  */
 export async function scrapeSources(
-  sources: { identifier: string }[],
+  sources: { identifier: string; maxItems?: number; timeframeHours?: number }[],
 ): Promise<Story[]> {
   console.log("Fetching sources...");
   
@@ -436,7 +460,17 @@ export async function scrapeSources(
     sources = [sources[0]];
   }
   
-  console.log("모든 소스 목록:", sources);
+  // 엄격한 검증: 모든 소스의 maxItems=1, timeframeHours=24 적용
+  const validatedSources = sources.map(source => ({
+    ...source,
+    maxItems: 1, // 강제로 1개로 설정
+    timeframeHours: 24 // 강제로 24시간으로 설정
+  }));
+  
+  console.log("모든 소스 파라미터 검증 후 설정:");
+  validatedSources.forEach(source => {
+    console.log(`- ${source.identifier}: 최대 ${source.maxItems}개 항목, ${source.timeframeHours}시간 이내`);
+  });
   
   // 스크래핑 시작 시간 기록
   const startTime = new Date();
@@ -470,80 +504,41 @@ export async function scrapeSources(
       // 동적 크롤링 사용
       console.log("Playwright를 사용한 동적 크롤링 시작...");
       
-              // 동적 크롤링 실행
-        const crawlResults = await dynamicCrawlWebsites(sources, {
-          targetDate: yesterdayFormatted, // 어제 날짜로 설정하여 24시간 이내 기사 포함
-          contentFocus: "AI, machine learning, artificial intelligence, neural network, large language model, LLM",
-          maxLinksPerSource: 5
-        });
+      // 동적 크롤링 실행
+      const crawlResults = await dynamicCrawlWebsites(validatedSources, {
+        targetDate: yesterdayFormatted, // 어제 날짜로 설정하여 24시간 이내 기사 포함
+        contentFocus: "AI, machine learning, artificial intelligence, neural network, large language model, LLM",
+        maxLinksPerSource: 1 // 강제로 1개로 제한
+      });
       
-      for (const story of crawlResults) {
-        // 콘텐츠 저장
-        if (story.fullContent && story.fullContent.length > 100) {
-          try {
-            // 콘텐츠 해시 생성 (파일명 용)
-            const contentHash = crypto.createHash('md5').update(story.link + story.headline).digest('hex');
-            
-            // 콘텐츠 저장
-            console.log(`원문 저장 시작: ${story.headline} (${story.fullContent.length} 바이트)`);
-            
-            // 이미 저장된 내용이 있는지 확인
-            const existingContent = await storeFullContent(
-              story.headline, 
-              story.fullContent, 
-              contentHash
-            );
-            
-            if (existingContent) {
-              console.log(`이미 저장된 콘텐츠가 있습니다: ${story.headline}`);
-            } else {
-              console.log(`원문을 데이터베이스에 저장했습니다 (${story.fullContent.length} 바이트): ${story.headline} (ID: ${contentHash})`);
-            }
-            
-            // 카테고리 분석 (완전히 새로운 콘텐츠인 경우만)
-            if (!existingContent) {
-              console.log(`"${story.headline}" 콘텐츠에 대한 고급 카테고리 분석 수행...`);
-              
-              // 계층적 카테고리 분류 함수 사용
-              const categoryResult = await classifyContentHierarchically(story.fullContent);
-              
-              // typescript 호환성을 위한 타입 확장
-              const enrichedStory: any = story;
-              enrichedStory.category = categoryResult.mainCategory;
-              enrichedStory.metadata = {
-                subCategories: categoryResult.subCategories,
-                topics: categoryResult.topics,
-                confidence: categoryResult.confidence
-              };
-              
-              console.log(`- 메인 카테고리: ${categoryResult.mainCategory} (신뢰도: ${(categoryResult.confidence * 100).toFixed(1)}%)`);
-            }
-            
-            // 스토리 추가 - 타입 안전하게 변환
-            const typedStory: Story = {
-              headline: story.headline,
-              link: story.link,
-              date_posted: story.date_posted,
-              fullContent: story.fullContent,
-              imageUrls: story.imageUrls,
-              videoUrls: story.videoUrls,
-              popularity: story.popularity,
-              content_storage_id: story.content_storage_id,
-              content_storage_method: story.content_storage_method,
-              category: (story as any).category || '연구 동향',
-              metadata: (story as any).metadata || {
-                subCategories: [],
-                topics: [],
-                confidence: 0.5
-              }
-            };
-            
-            allStories.push(typedStory);
-          } catch (storageError) {
-            console.error(`콘텐츠 저장 오류 (${story.headline}):`, storageError);
-          }
+      // 결과 검증
+      console.log(`동적 크롤링 후 결과: ${crawlResults.length}개 스토리 수집됨`);
+      
+      // 날짜 정보 로깅
+      crawlResults.forEach((story, idx) => {
+        console.log(`${idx + 1}. "${story.headline}" - 날짜: ${story.date_posted || '날짜 없음'}`);
+      });
+      
+      // 24시간 이내 게시물만 명시적으로 필터링
+      const filteredResults = crawlResults.filter(story => isLikelyRecent(story.date_posted || ''));
+      console.log(`24시간 필터링 후: ${filteredResults.length}개 스토리 남음`);
+      
+      // 각 소스별로 1개씩만 가져오도록 그룹화
+      const storyBySource = new Map<string, Story>();
+      for (const story of filteredResults) {
+        // 각 소스별 가장 최신 게시물 확인
+        const source = story.link.match(/^https?:\/\/([^\/]+)/i)?.[1] || story.link;
+        if (!storyBySource.has(source) || isNewer(story.date_posted, storyBySource.get(source)?.date_posted)) {
+          storyBySource.set(source, story);
         }
       }
+      
+      // 최종 스토리 모음
+      const finalResults = Array.from(storyBySource.values());
+      console.log(`소스별 중복 제거 후 최종: ${finalResults.length}개 스토리`);
+      
+      // 결과 처리
+      allStories = finalResults;
     } else {
       // 정적 크롤링 사용 (기존 코드)
       console.log("crawl4ai를 사용한 정적 크롤링 시작...");
@@ -554,7 +549,7 @@ export async function scrapeSources(
       
       console.log(`최근 24시간(${yesterdayFormatted} ~ ${todayFormatted}) 내의 AI 관련 기사를 크롤링합니다.`);
       
-      const crawlResults = await crawlWebsites(sources, {
+      const crawlResults = await crawlWebsites(validatedSources, {
         llmProvider,
         batchDelay: CONFIG.BATCH_DELAY,
         meta: {
@@ -564,73 +559,34 @@ export async function scrapeSources(
         }
       });
       
-      // 결과 처리 (기존 처리 로직)
-      for (const story of crawlResults) {
-        if (story.fullContent && story.fullContent.length > 100) {
-          try {
-            // 콘텐츠 해시 생성
-            const contentHash = crypto.createHash('md5').update(story.link + story.headline).digest('hex');
-            
-            // 콘텐츠 저장
-            console.log(`원문 저장 시작: ${story.headline} (${story.fullContent.length} 바이트)`);
-            
-            // 이미 저장된 내용이 있는지 확인
-            const existingContent = await storeFullContent(
-              story.headline, 
-              story.fullContent, 
-              contentHash
-            );
-            
-            if (existingContent) {
-              console.log(`이미 저장된 콘텐츠가 있습니다: ${story.headline}`);
-            } else {
-              console.log(`원문을 데이터베이스에 저장했습니다 (${story.fullContent.length} 바이트): ${story.headline} (ID: ${contentHash})`);
-            }
-            
-            // 카테고리 분석 (완전히 새로운 콘텐츠인 경우만)
-            if (!existingContent) {
-              console.log(`"${story.headline}" 콘텐츠에 대한 고급 카테고리 분석 수행...`);
-              
-              // 계층적 카테고리 분류 함수 사용
-              const categoryResult = await classifyContentHierarchically(story.fullContent);
-              
-              // typescript 호환성을 위한 타입 확장
-              const enrichedStory: any = story;
-              enrichedStory.category = categoryResult.mainCategory;
-              enrichedStory.metadata = {
-                subCategories: categoryResult.subCategories,
-                topics: categoryResult.topics,
-                confidence: categoryResult.confidence
-              };
-              
-              console.log(`- 메인 카테고리: ${categoryResult.mainCategory} (신뢰도: ${(categoryResult.confidence * 100).toFixed(1)}%)`);
-            }
-            
-            // 스토리 추가 - 타입 안전하게 변환
-            const typedStory: Story = {
-              headline: story.headline,
-              link: story.link,
-              date_posted: story.date_posted,
-              fullContent: story.fullContent,
-              imageUrls: story.imageUrls,
-              videoUrls: story.videoUrls,
-              popularity: story.popularity,
-              content_storage_id: story.content_storage_id,
-              content_storage_method: story.content_storage_method,
-              category: (story as any).category || '연구 동향',
-              metadata: (story as any).metadata || {
-                subCategories: [],
-                topics: [],
-                confidence: 0.5
-              }
-            };
-            
-            allStories.push(typedStory);
-          } catch (storageError) {
-            console.error(`콘텐츠 저장 오류 (${story.headline}):`, storageError);
-          }
+      // 결과 검증
+      console.log(`정적 크롤링 후 결과: ${crawlResults.length}개 스토리 수집됨`);
+      
+      // 날짜 정보 로깅
+      crawlResults.forEach((story, idx) => {
+        console.log(`${idx + 1}. "${story.headline}" - 날짜: ${story.date_posted || '날짜 없음'}`);
+      });
+      
+      // 24시간 이내 게시물만 명시적으로 필터링
+      const filteredResults = crawlResults.filter(story => isLikelyRecent(story.date_posted || ''));
+      console.log(`24시간 필터링 후: ${filteredResults.length}개 스토리 남음`);
+      
+      // 각 소스별로 1개씩만 가져오도록 그룹화
+      const storyBySource = new Map<string, Story>();
+      for (const story of filteredResults) {
+        // 각 소스별 가장 최신 게시물 확인
+        const source = story.link.match(/^https?:\/\/([^\/]+)/i)?.[1] || story.link;
+        if (!storyBySource.has(source) || isNewer(story.date_posted, storyBySource.get(source)?.date_posted)) {
+          storyBySource.set(source, story);
         }
       }
+      
+      // 최종 스토리 모음
+      const finalResults = Array.from(storyBySource.values());
+      console.log(`소스별 중복 제거 후 최종: ${finalResults.length}개 스토리`);
+      
+      // 코드 재사용을 방지하고 단순화하기 위해 결과 바로 처리
+      allStories = finalResults;
     }
     
     // 주요 로그 정보 출력
@@ -651,4 +607,68 @@ export async function scrapeSources(
     // 오류 발생해도 지금까지 수집된 스토리 반환
     return allStories;
   }
+}
+
+/**
+ * 두 날짜 문자열 중 어느 것이 더 최신인지 비교
+ * @param date1 첫 번째 날짜 문자열
+ * @param date2 두 번째 날짜 문자열
+ * @returns 첫 번째 날짜가 더 최신이면 true, 아니면 false
+ */
+function isNewer(date1?: string, date2?: string): boolean {
+  if (!date1) return false;
+  if (!date2) return true;
+  
+  // 두 날짜 모두 있을 경우
+  
+  // "X days ago" 패턴 처리
+  const daysAgo1 = date1.match(/(\d+)\s*days?\s*ago/i);
+  const daysAgo2 = date2.match(/(\d+)\s*days?\s*ago/i);
+  
+  if (daysAgo1 && daysAgo2) {
+    // 둘 다 "X days ago" 형식이면 숫자가 작을수록 최신
+    return parseInt(daysAgo1[1]) < parseInt(daysAgo2[1]);
+  }
+  
+  // "X hours ago" 패턴 처리
+  const hoursAgo1 = date1.match(/(\d+)\s*(hour|hours)\s*ago/i);
+  const hoursAgo2 = date2.match(/(\d+)\s*(hour|hours)\s*ago/i);
+  
+  if (hoursAgo1 && hoursAgo2) {
+    // 둘 다 "X hours ago" 형식이면 숫자가 작을수록 최신
+    return parseInt(hoursAgo1[1]) < parseInt(hoursAgo2[1]);
+  }
+  
+  // "X minutes ago" 패턴 처리
+  const minsAgo1 = date1.match(/(\d+)\s*(minute|minutes|min|mins)\s*ago/i);
+  const minsAgo2 = date2.match(/(\d+)\s*(minute|minutes|min|mins)\s*ago/i);
+  
+  if (minsAgo1 && minsAgo2) {
+    // 둘 다 "X minutes ago" 형식이면 숫자가 작을수록 최신
+    return parseInt(minsAgo1[1]) < parseInt(minsAgo2[1]);
+  }
+  
+  // "days" vs "hours" vs "minutes" 비교
+  if (daysAgo1) {
+    if (hoursAgo2 || minsAgo2) return false; // 시간/분 단위가 일 단위보다 최신
+  } else if (hoursAgo1) {
+    if (daysAgo2) return true; // 시간 단위가 일 단위보다 최신
+    if (minsAgo2) return false; // 분 단위가 시간 단위보다 최신
+  } else if (minsAgo1) {
+    if (daysAgo2 || hoursAgo2) return true; // 분 단위가 일/시간 단위보다 최신
+  }
+  
+  // 일반적인 날짜 형식 비교 시도
+  try {
+    const d1 = new Date(date1).getTime();
+    const d2 = new Date(date2).getTime();
+    if (!isNaN(d1) && !isNaN(d2)) {
+      return d1 > d2; // 타임스탬프가 클수록 최신
+    }
+  } catch (e) {
+    // 날짜 파싱 실패 시 무시
+  }
+  
+  // 비교 불가능한 경우 첫 번째 날짜를 우선시
+  return true;
 }

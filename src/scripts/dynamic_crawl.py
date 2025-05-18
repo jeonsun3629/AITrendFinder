@@ -97,47 +97,80 @@ def parse_date(date_str: str) -> str:
         print(f"날짜 파싱 오류: {str(e)}")
         return date_str
 
-# 날짜 관련성 확인 - 최대 3일까지의 기사 포함
+# 날짜 관련성 확인 - 24시간 이내의 기사만 포함하도록 엄격하게 제한
 def is_relevant_date(date_str: str, target_date: Optional[str] = None) -> bool:
     if not target_date:
         return True
     
     try:
+        # 현재 시간 기준 (target_date가 제공되지 않은 경우)
+        now = datetime.now()
+        
+        # target_date가 제공된 경우 해당 날짜 사용
+        if target_date:
+            target = datetime.strptime(target_date, '%Y-%m-%d').date()
+            # 타겟 날짜가 오늘보다 이전이면 target ~ 현재 사이의 콘텐츠만 포함
+            if target.toordinal() < now.date().toordinal():
+                start_date = target
+                end_date = now.date()
+            else:
+                # 타겟 날짜가 미래인 경우 현재 ~ target 사이의 콘텐츠만 포함
+                start_date = now.date()
+                end_date = target
+                
+            print(f"날짜 필터링 기준: {start_date} ~ {end_date} (24시간 이내)")
+        
+        # "X days ago" 패턴 직접 처리
+        days_ago_match = re.search(r'(\d+)\s*days?\s*ago', date_str, re.IGNORECASE)
+        if days_ago_match:
+            days = int(days_ago_match.group(1))
+            print(f"날짜 '{date_str}'는 {days}일 전으로 파싱됨")
+            # 24시간(1일) 이내만 허용
+            return days <= 1
+        
+        # "yesterday" 처리
+        if re.search(r'yesterday|어제', date_str, re.IGNORECASE):
+            print(f"날짜 '{date_str}'는 어제로 파싱됨 (24시간 이내)")
+            return True
+        
+        # "X hours/minutes ago" 패턴 처리
+        time_ago_match = re.search(r'(\d+)\s*(hour|hours|minute|minutes|min|mins)\s*ago', date_str, re.IGNORECASE)
+        if time_ago_match:
+            amount = int(time_ago_match.group(1))
+            unit = time_ago_match.group(2).lower()
+            
+            if 'hour' in unit:
+                # 24시간 이내만 허용
+                is_recent = amount <= 24
+                print(f"날짜 '{date_str}'는 {amount}시간 전으로 파싱됨 - {'최근' if is_recent else '24시간 초과'}")
+                return is_recent
+            elif 'min' in unit or 'minute' in unit:
+                # 분 단위는 항상 최근
+                print(f"날짜 '{date_str}'는 {amount}분 전으로 파싱됨 (최근)")
+                return True
+        
+        # 일반 날짜 형식 처리
         parsed_date = parse_date(date_str)
-        target = datetime.strptime(target_date, '%Y-%m-%d').date()
-        content_date = datetime.strptime(parsed_date, '%Y-%m-%d').date()
-        
-        # 대상 날짜로부터 3일 이내의 콘텐츠 포함
-        delta = content_date - target
-        days_diff = delta.days
-        
-        # 대상 날짜부터 미래 방향으로 3일, 과거 방향으로 0일
-        # 즉, target_date가 과거일 경우(예: 어제) 어제부터 미래 3일까지 포함
-        return -1 <= days_diff <= 3
-    except:
-        # 날짜 비교 실패 시 포함 (안전성)
-        return True
-
-# 날짜 관련성 확인 - 최대 7일까지의 기사 포함
-def is_relevant_date(date_str: str, target_date: Optional[str] = None) -> bool:
-    if not target_date:
-        return True
-    
-    try:
-        parsed_date = parse_date(date_str)
-        target = datetime.strptime(target_date, '%Y-%m-%d').date()
-        content_date = datetime.strptime(parsed_date, '%Y-%m-%d').date()
-        
-        # 대상 날짜로부터 7일 이내의 콘텐츠 포함
-        delta = content_date - target
-        days_diff = delta.days
-        
-        # 대상 날짜부터 미래 방향으로 7일, 과거 방향으로 3일
-        # 대상 날짜가 과거일 경우(예: 어제) 더 넓은 범위의 콘텐츠 수집
-        return -3 <= days_diff <= 7
-    except:
-        # 날짜 비교 실패 시 포함 (안전성)
-        return True
+        try:
+            content_date = datetime.strptime(parsed_date, '%Y-%m-%d').date()
+            
+            # 오늘 또는 어제인지 확인 (24시간 이내)
+            delta = now.date() - content_date
+            
+            # 24시간(1일) 이내만 허용 - 엄격하게 적용
+            is_recent = delta.days <= 1
+            print(f"날짜 '{date_str}'는 {delta.days}일 전으로 파싱됨 - {'최근' if is_recent else '24시간 초과'}")
+            return is_recent
+            
+        except Exception as e:
+            print(f"날짜 파싱 오류 ({date_str}): {e}")
+            # 날짜 파싱 오류 시 false 반환 (안전하게)
+            return False
+            
+    except Exception as e:
+        print(f"날짜 비교 오류 ({date_str}): {e}")
+        # 오류 발생 시 false 반환 (안전하게)
+        return False
 
 # Playwright를 사용한 동적 크롤링 클래스
 class DynamicCrawler:
@@ -266,7 +299,22 @@ class DynamicCrawler:
                         return elements[0].innerHTML;
                     }}
                 }}
-                // 선택자가 없는 경우 body 전체 콘텐츠 반환
+                
+                // 선택자가 없는 경우 메인 콘텐츠 영역 추정
+                const articleSelectors = [
+                    'article', 'main', '.article', '.content', '.post', 
+                    '#article', '#content', '#post', '[role="main"]',
+                    '.entry-content', '.post-content', '.article-content'
+                ];
+                
+                for (const selector of articleSelectors) {{
+                    const element = document.querySelector(selector);
+                    if (element) {{
+                        return element.innerHTML;
+                    }}
+                }}
+                
+                // 여전히 못 찾은 경우 body 전체 콘텐츠 반환
                 return document.body.innerHTML;
             }}''')
             
@@ -274,15 +322,100 @@ class DynamicCrawler:
             soup = BeautifulSoup(content_html, 'html.parser')
             
             # 불필요한 요소 제거
-            for tag in soup.select('script, style, nav, footer, .nav, .footer, .menu, .sidebar, .comments, .related, .advertisement'):
+            for tag in soup.select('script, style, nav, footer, header, .nav, .footer, .menu, .sidebar, .comments, .related, .advertisement, .author, .profile, .avatar, .bio, .social-media, .share, .likes'):
                 tag.decompose()
             
-            # 이미지 URL 추출
-            image_urls = [img.get('src') for img in soup.select('img') if img.get('src')]
-            image_urls = [url if url.startswith('http') else f"https://{url}" if url.startswith('//') else url for url in image_urls]
+            # 1. 본문 이미지 URL 추출 - 프로필 이미지, 아이콘, 로고 등 제외
+            image_urls = []
             
-            # 비디오 URL 추출
-            video_urls = [video.get('src') for video in soup.select('video source, iframe') if video.get('src')]
+            # 1.1 본문 영역에서 큰 이미지만 선택 (작은 이미지는 아이콘일 가능성 높음)
+            for img in soup.select('img'):
+                src = img.get('src')
+                if not src:
+                    continue
+                
+                # 이미지 URL 정규화
+                if src.startswith('//'):
+                    src = f"https:{src}"
+                elif not src.startswith(('http://', 'https://')):
+                    # 상대 경로인 경우 절대 경로로 변환 시도
+                    if src.startswith('/'):
+                        # 도메인 추출 시도
+                        domain_match = re.match(r'(https?://[^/]+)', page.url)
+                        if domain_match:
+                            src = f"{domain_match.group(1)}{src}"
+                
+                # 이미지 크기 속성 확인 (작은 이미지 필터링)
+                width = img.get('width')
+                height = img.get('height')
+                try:
+                    # 크기가 명시적으로 작은 이미지 제외
+                    if width and int(width) < 100:
+                        continue
+                    if height and int(height) < 100:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+                
+                # 이미지 클래스와 ID 기반 필터링
+                img_class = img.get('class', [])
+                img_id = img.get('id', '')
+                img_alt = img.get('alt', '').lower()
+                
+                # 프로필, 아이콘, 로고 등 제외 키워드
+                excluded_keywords = ['profile', 'avatar', 'logo', 'icon', 'thumbnail', 'badge', 
+                                   'banner', 'author', 'user', 'favicon', 'menu', 'nav']
+                
+                # 클래스, ID, alt 텍스트에 제외 키워드가 있는지 확인
+                skip = False
+                for keyword in excluded_keywords:
+                    if ((isinstance(img_class, list) and any(keyword in c.lower() for c in img_class)) or
+                        (isinstance(img_class, str) and keyword in img_class.lower()) or
+                        keyword in img_id.lower() or 
+                        keyword in img_alt):
+                        skip = True
+                        break
+                
+                if skip:
+                    continue
+                
+                # 본문 이미지로 판단되면 추가
+                image_urls.append(src)
+            
+            # 2. 본문 비디오 URL 추출 - 배너, 광고 등 제외
+            video_urls = []
+            
+            # 2.1 iframe 비디오 (YouTube, Vimeo 등)
+            for iframe in soup.select('iframe'):
+                src = iframe.get('src')
+                if not src:
+                    continue
+                
+                # 일반적인 비디오 서비스 도메인 확인
+                video_domains = ['youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com', 
+                                'player.twitch.tv', 'ted.com', 'metacafe.com', 'wistia.com']
+                
+                if any(domain in src.lower() for domain in video_domains):
+                    video_urls.append(src)
+            
+            # 2.2 video 태그
+            for video in soup.select('video'):
+                # video 태그 자체에 src가 있는 경우
+                src = video.get('src')
+                if src:
+                    video_urls.append(src)
+                
+                # source 태그가 있는 경우
+                for source in video.select('source'):
+                    src = source.get('src')
+                    if src:
+                        video_urls.append(src)
+            
+            # URL 정규화 및 중복 제거
+            image_urls = list(set([url if url.startswith('http') else url for url in image_urls if url]))
+            video_urls = list(set([url if url.startswith('http') else url for url in video_urls if url]))
+            
+            print(f"추출된 본문 이미지: {len(image_urls)}개, 비디오: {len(video_urls)}개")
             
             # 날짜 추출 시도
             date_text = ''
@@ -336,8 +469,8 @@ class DynamicCrawler:
             print(f"제목 추출 오류: {str(e)}")
             return ""
     
-    async def crawl_url(self, url: str, content_focus: Optional[str] = None, max_links: int = 5) -> CrawlResult:
-        """단일 URL을 크롤링하고 관련 링크를 탐색"""
+    async def crawl_url(self, url: str, content_focus: Optional[str] = None, max_links: int = 1) -> CrawlResult:
+        """단일 URL을 크롤링하고 관련 링크를 탐색 - 최대 링크 수를 1로 기본 설정"""
         result = CrawlResult(url)
         
         try:
@@ -381,9 +514,10 @@ class DynamicCrawler:
                     content = await self.extract_content(link_page, link_structure['structure'])
                     headline = await self.extract_headline(link_page)
                     
-                    # 날짜 관련성 확인
-                    if self.target_date and not is_relevant_date(content['date'], self.target_date):
-                        print(f"날짜 필터링: {content['date']} < {self.target_date}")
+                    # 날짜 관련성 확인 - 24시간 필터링 엄격하게 적용
+                    date_is_relevant = is_relevant_date(content['date'], self.target_date)
+                    if not date_is_relevant:
+                        print(f"⚠️ 날짜 필터링: {content['date']} (24시간 초과)")
                         await link_page.close()
                         continue
                     
@@ -471,9 +605,15 @@ async def main():
             result = await crawler.crawl_url(
                 url=source,
                 content_focus=content_focus,
-                max_links=5  # 최대 5개 관련 링크 처리
+                max_links=1  # 강제로 1개로 제한
             )
             results.append(result.to_dict())
+            
+            # 소스 사이에 지연 추가
+            if source != sources[-1]:
+                delay = 5  # 5초 지연
+                print(f"다음 소스 처리 전 {delay}초 대기...")
+                await asyncio.sleep(delay)
         
         # 크롤러 종료
         await crawler.close()

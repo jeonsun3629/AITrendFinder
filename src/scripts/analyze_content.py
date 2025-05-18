@@ -248,10 +248,15 @@ def analyze_content():
 # 메인 실행
 try:
     result = analyze_content()
-    print(json.dumps(result))
+    print(json.dumps(result, ensure_ascii=False))
 except Exception as e:
-    print(json.dumps({
-        "error": str(e),
-        "category": "연구 동향",  # 기본값
-        "confidence": 0.5
-    })) 
+    # 오류 발생 시 기본 카테고리 반환 (JavaScript에서 처리 가능)
+    error_result = {
+        "category": "연구 동향",
+        "confidence": 0.5,
+        "subCategories": [],
+        "relatedTopics": [],
+        "error": str(e)
+    }
+    print(json.dumps(error_result, ensure_ascii=False))
+    sys.exit(1) 

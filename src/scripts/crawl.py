@@ -12,8 +12,9 @@ import sys
 import json
 import asyncio
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+import re
 
 # 인코딩 설정
 import io
@@ -60,6 +61,18 @@ def setup_argparse() -> argparse.Namespace:
         choices=["openai", "together", "deepseek"],
         help="LLM 프로바이더"
     )
+    parser.add_argument(
+        "--max_items", 
+        type=int, 
+        default=3,
+        help="각 소스에서 가져올 최대 아이템 수"
+    )
+    parser.add_argument(
+        "--timeframe_hours", 
+        type=int, 
+        default=24,
+        help="현재 시간으로부터 몇 시간 내의 컨텐츠만 가져올지 설정"
+    )
     return parser.parse_args()
 
 def setup_crawl4ai(llm_provider: str = "openai") -> AsyncWebCrawler:
@@ -98,18 +111,25 @@ def setup_crawl4ai(llm_provider: str = "openai") -> AsyncWebCrawler:
         llm_config=llm_config
     )
 
-async def crawl_source(crawler: AsyncWebCrawler, source: str) -> Dict[str, Any]:
+async def crawl_source(crawler: AsyncWebCrawler, source: str, max_items: int = 1, timeframe_hours: int = 24) -> Dict[str, Any]:
     """단일 소스 크롤링"""
-    print(f"크롤링 시작: {source}")
+    print(f"크롤링 시작: {source} (최대 {max_items}개 항목, {timeframe_hours}시간 이내)")
     
     try:
         # 크롤링 수행 (비동기 함수로 변경, crawl → arun)
         result = await crawler.arun(
             url=source,
+            # 최대 아이템 수와 시간 제한 적용
+            extra_instructions=f"가장 최근에 발행된 글(최대 {timeframe_hours}시간 이내)만 가져와주세요. 최대 {max_items}개까지만 가져오세요."
         )
         
         # 결과 가공 - crawl4ai 0.6.3 API에 맞춰 수정
         stories = []
+        
+        # 현재 시간 설정 (날짜 필터링용)
+        now = datetime.now()
+        cutoff_time = now - timedelta(hours=timeframe_hours)
+        print(f"현재 시간: {now.isoformat()}, 기준 시간: {cutoff_time.isoformat()} (최근 {timeframe_hours}시간)")
         
         if hasattr(result, 'markdown'):
             # 마크다운 결과가 있는 경우 (최신 API)
@@ -172,9 +192,79 @@ async def crawl_source(crawler: AsyncWebCrawler, source: str) -> Dict[str, Any]:
             }
             stories.append(story)
         
+        # 결과 필터링: 최근 N시간 이내 & 최대 개수 제한
+        filtered_stories = []
+        for story in stories:
+            # 날짜 파싱 시도
+            is_recent = False
+            try:
+                date_str = story["date_posted"]
+                
+                # "X days ago" 패턴 처리
+                days_ago_match = re.search(r'(\d+)\s*days?\s*ago', date_str, re.IGNORECASE)
+                if days_ago_match:
+                    days = int(days_ago_match.group(1))
+                    print(f"날짜 '{date_str}'는 {days}일 전으로 파싱됨")
+                    # 1일 초과는 제외 (24시간 기준)
+                    is_recent = days <= 1
+                    if not is_recent:
+                        print(f"24시간 초과 게시물 필터링: {story['headline']} ({date_str})")
+                        continue
+                
+                # "X hours ago", "X minutes ago" 패턴 처리
+                time_ago_match = re.search(r'(\d+)\s*(hour|hours|minute|minutes|min|mins)\s*ago', date_str, re.IGNORECASE)
+                if time_ago_match:
+                    amount = int(time_ago_match.group(1))
+                    unit = time_ago_match.group(2).lower()
+                    
+                    if 'hour' in unit:
+                        is_recent = amount <= timeframe_hours
+                    else:  # minutes
+                        is_recent = True  # 분 단위는 항상 최근
+                    
+                    if not is_recent:
+                        print(f"시간 초과 게시물 필터링: {story['headline']} ({date_str})")
+                        continue
+                
+                # 날짜 형식 직접 파싱 시도
+                try:
+                    # 다양한 날짜 형식 시도
+                    for date_format in [
+                        '%Y-%m-%d', '%Y/%m/%d', '%b %d, %Y', '%B %d, %Y',
+                        '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S'
+                    ]:
+                        try:
+                            story_date = datetime.strptime(date_str, date_format)
+                            if (now - story_date).total_seconds() <= timeframe_hours * 3600:
+                                is_recent = True
+                            break
+                        except ValueError:
+                            continue
+                except Exception as date_error:
+                    print(f"날짜 파싱 오류: {date_error}")
+                
+                # 날짜 확인 불가 또는 충분히 최근이 아닌 경우
+                if not is_recent:
+                    print(f"날짜 필터링: {story['headline']} ({date_str})")
+                    continue
+            except Exception as e:
+                print(f"날짜 처리 오류: {str(e)}")
+                # 날짜 처리 오류 시 안전을 위해 포함 (JavaScript에서 다시 필터링)
+            
+            filtered_stories.append(story)
+        
+        # 최대 아이템 수 제한
+        if len(filtered_stories) > max_items:
+            print(f"{len(filtered_stories)}개 스토리를 {max_items}개로 제한합니다.")
+            filtered_stories = filtered_stories[:max_items]
+        
+        print(f"최종 선택된 스토리: {len(filtered_stories)}개")
+        for i, story in enumerate(filtered_stories):
+            print(f"  {i+1}. '{story['headline']}' ({story['date_posted']})")
+        
         return {
             "source": source,
-            "stories": stories
+            "stories": filtered_stories
         }
         
     except Exception as e:
@@ -196,26 +286,41 @@ async def main_async():
             print("유효한 소스가 제공되지 않았습니다. 기본 소스를 사용합니다.")
             sources = ["https://openai.com/blog"]
         
-        # 첫 번째 소스만 처리 (단일 소스 처리)
-        source = sources[0]
-        print(f"처리할 소스: {source}")
+        # 최대 아이템 수 및 시간 제한 설정
+        max_items = int(args.max_items)
+        timeframe_hours = int(args.timeframe_hours)
+        
+        print(f"처리할 소스: {sources}")
+        print(f"설정: 최대 {max_items}개 항목, {timeframe_hours}시간 이내")
         
         # crawl4ai 크롤러 설정
         crawler = setup_crawl4ai(args.llm_provider)
         
-        # 소스 크롤링
-        result = await crawl_source(crawler, source)
+        # 모든 소스 결과를 저장할 배열
+        all_results = []
+        
+        # 모든 소스를 순차적으로 처리
+        for source in sources:
+            print(f"\n===== 소스 처리 중: {source} =====")
+            result = await crawl_source(crawler, source, max_items, timeframe_hours)
+            all_results.append(result)
+            
+            # 소스 사이에 약간의 지연 추가
+            if source != sources[-1]:  # 마지막 소스가 아니면
+                delay = 5  # 5초 지연
+                print(f"다음 소스 처리 전 {delay}초 대기...")
+                await asyncio.sleep(delay)
         
         # 결과 저장
         output_path = args.output
         with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump([result], f, ensure_ascii=False, indent=2)
+            json.dump(all_results, f, ensure_ascii=False, indent=2)
         
         print(f"크롤링 완료! 결과가 {output_path}에 저장되었습니다.")
         
-        # 성공적으로 작업 완료 후 명시적 종료
-        num_stories = len(result["stories"]) if "stories" in result else 0
-        print(f"크롤링 완료: {num_stories}개의 스토리를 찾았습니다.")
+        # 총 스토리 수 계산
+        total_stories = sum(len(result["stories"]) for result in all_results)
+        print(f"총 {len(sources)}개 소스에서 {total_stories}개의 스토리를 찾았습니다.")
         
     except Exception as e:
         print(f"오류 발생: {str(e)}")

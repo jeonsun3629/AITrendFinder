@@ -868,34 +868,125 @@ async function processSummaries(openai: OpenAI, stories: any[], model: string) {
     }
   }
   
-  // 배치 요약 처리
-  const briefSummaries = await Promise.all(
-    briefSummaryItems.map(text => createBriefSummary(text, model, openai))
-  );
+  // 배치 요약 처리 - 순차적으로 처리하여 Rate Limit 방지
+  const briefSummaries: string[] = [];
   
+  for (let i = 0; i < briefSummaryItems.length; i++) {
+    try {
+      console.log(`Creating brief summary... (${i+1}/${briefSummaryItems.length})`);
+      console.log(`요약할 텍스트 길이: ${briefSummaryItems[i].length}바이트`);
+      
+      // 각 요약을 개별적으로 생성
+      const summary = await createBriefSummary(briefSummaryItems[i], model, openai);
+      briefSummaries.push(summary);
+      
+      // Rate Limit 방지를 위한 딜레이 (7~10초)
+      if (i < briefSummaryItems.length - 1) {
+        const delay = Math.floor(Math.random() * 3000) + 7000;
+        console.log(`Brief Summary 요청 간 ${delay}ms 대기 중...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    } catch (error) {
+      console.error("Brief summary creation error:", error);
+      
+      // Rate Limit 오류인 경우
+      if (error && typeof error === 'object' && 'status' in error && error.status === 429) {
+        console.log("Rate Limit 오류 발생, 30초 대기 후 재시도...");
+        await new Promise(resolve => setTimeout(resolve, 30000)); // 30초 대기
+        
+        try {
+          // 재시도
+          const summary = await createBriefSummary(briefSummaryItems[i], model, openai);
+          briefSummaries.push(summary);
+        } catch (retryError) {
+          console.error("재시도 후에도 오류 발생:", retryError);
+          // 실패 시 첫 200자 사용
+          briefSummaries.push(briefSummaryItems[i].substring(0, 200) + "...");
+          console.log("모든 요약 시도 실패, 원본 텍스트 앞부분을 사용합니다.");
+        }
+      } else {
+        // 다른 오류인 경우 - 첫 200자 사용
+        briefSummaries.push(briefSummaryItems[i].substring(0, 200) + "...");
+        console.log("요약 생성 오류, 원본 텍스트 앞부분을 사용합니다.");
+      }
+      
+      // 오류 후 더 길게 대기 (15초)
+      console.log("오류 발생 후 15초 대기 중...");
+      await new Promise(resolve => setTimeout(resolve, 15000));
+    }
+  }
+
   // Rate Limit 방지를 위해 순차적으로 불릿 포인트 요약 처리
   const bulletPointSummaries: string[] = [];
-  for (const item of bulletPointItems) {
+  for (let i = 0; i < bulletPointItems.length; i++) {
     try {
-      const summary = await createBulletPointSummary(item.text, model, item.isTranslated, openai);
+      console.log(`Creating bullet point summary (already translated) (${i+1}/${bulletPointItems.length})`);
+      const summary = await createBulletPointSummary(bulletPointItems[i].text, model, bulletPointItems[i].isTranslated, openai);
       bulletPointSummaries.push(summary);
       
-      // Rate Limit 방지를 위한 딜레이 (3~5초)
-      const delay = Math.floor(Math.random() * 2000) + 3000;
-      console.log(`Rate Limit 방지를 위해 ${delay}ms 대기 중...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+      // 성공 메시지 출력
+      console.log(`${i+1}번째 불릿 포인트 생성 완료`);
+      
+      // Rate Limit 방지를 위한 딜레이 (8~12초)
+      if (i < bulletPointItems.length - 1) {
+        const delay = Math.floor(Math.random() * 4000) + 8000;
+        console.log(`Rate Limit 방지를 위해 ${delay}ms 대기 중...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
     } catch (error) {
       console.error("Bullet point creation error:", error);
-      // 오류 발생 시 기본값 추가
-      bulletPointSummaries.push("• 요약을 생성할 수 없습니다.");
       
-      // 오류 후 더 길게 대기 (10초)
-      console.log("오류 발생 후 10초 대기 중...");
-      await new Promise(resolve => setTimeout(resolve, 10000));
+      // Rate Limit 오류인 경우
+      if (error && typeof error === 'object' && 'status' in error && error.status === 429) {
+        console.log("Rate Limit 오류 발생, 45초 대기 후 재시도...");
+        await new Promise(resolve => setTimeout(resolve, 45000)); // 45초 대기
+        
+        try {
+          // 재시도
+          const summary = await createBulletPointSummary(bulletPointItems[i].text, model, bulletPointItems[i].isTranslated, openai);
+          bulletPointSummaries.push(summary);
+          console.log(`${i+1}번째 불릿 포인트 재시도 후 생성 완료`);
+        } catch (retryError) {
+          console.error("재시도 후에도 오류 발생:", retryError);
+          // 기본 불릿 포인트 10개 생성
+          bulletPointSummaries.push(generateFallbackBulletPoints(bulletPointItems[i].text));
+        }
+      } else {
+        // 다른 오류인 경우 - 기본 불릿 포인트 생성
+        bulletPointSummaries.push(generateFallbackBulletPoints(bulletPointItems[i].text));
+      }
+      
+      // 오류 후 더 길게 대기 (20초)
+      console.log("오류 발생 후 20초 대기 중...");
+      await new Promise(resolve => setTimeout(resolve, 20000));
     }
   }
   
   return { briefSummaries, bulletPointSummaries };
+}
+
+/**
+ * API 오류 시 대체 불릿 포인트를 생성합니다.
+ */
+function generateFallbackBulletPoints(text: string): string {
+  // 내용이 너무 길면 앞부분만 사용
+  const truncatedText = text.length > 1000 ? text.substring(0, 1000) + "..." : text;
+  
+  // 간단한 단락 분리로 불릿 포인트 생성
+  const paragraphs = truncatedText.split(/\n\s*\n/);
+  const bullets = paragraphs.slice(0, 10).map(p => {
+    // 단락이 너무 길면 첫 문장만 사용
+    const firstSentence = p.split(/[.!?](\s|$)/)[0];
+    return `• ${firstSentence.length > 100 ? firstSentence.substring(0, 100) + "..." : firstSentence}`;
+  });
+  
+  // 10개 미만이면 채우기
+  while (bullets.length < 10) {
+    bullets.push(`• 추가 정보가 제공되지 않았습니다.`);
+  }
+  
+  console.log("기본 불릿 포인트 10개 생성됨");
+  return bullets.join("\n");
 }
 
 /**
