@@ -16,19 +16,19 @@ export async function getCronSources(): Promise<{ identifier: string; maxItems?:
 
     const sources: { identifier: string; maxItems: number; timeframeHours: number }[] = [
       // 가장 크롤링하기 쉬운 블로그 하나만 선택
-      // { identifier: "https://deepmind.google/discover/blog/", maxItems: 1, timeframeHours: 24 },
+      { identifier: "https://deepmind.google/discover/blog/", maxItems: 1, timeframeHours: 24 },
       { identifier: "https://huggingface.co/blog/community", maxItems: 1, timeframeHours: 24 },
-      // { identifier: "https://ai.meta.com/blog/", maxItems: 1, timeframeHours: 24 },
-      // { identifier: "https://openai.com/news/", maxItems: 1, timeframeHours: 24 },
-      // { identifier: "https://www.anthropic.com/news", maxItems: 1, timeframeHours: 24 },
+      { identifier: "https://ai.meta.com/blog/", maxItems: 1, timeframeHours: 24 },
+      { identifier: "https://openai.com/news/", maxItems: 1, timeframeHours: 24 },
+      { identifier: "https://www.anthropic.com/news", maxItems: 1, timeframeHours: 24 },
 
       // 뉴스
-      // { identifier: "https://www.reuters.com/technology/artificial-intelligence/", maxItems: 1, timeframeHours: 24 },
+      { identifier: "https://www.reuters.com/technology/artificial-intelligence/", maxItems: 1, timeframeHours: 24 },
 
       // 블로그
-      // { identifier: "https://news.ycombinator.com/", maxItems: 1, timeframeHours: 24 },
-      // { identifier: "https://simonwillison.net/", maxItems: 1, timeframeHours: 24 },
-      // { identifier: "https://buttondown.com/ainews/archive/", maxItems: 1, timeframeHours: 24 },
+      { identifier: "https://news.ycombinator.com/", maxItems: 1, timeframeHours: 24 },
+      { identifier: "https://simonwillison.net/", maxItems: 1, timeframeHours: 24 },
+      { identifier: "https://buttondown.com/ainews/archive/", maxItems: 1, timeframeHours: 24 },
     ];
 
     // 소스 설정값 확인 및 강화
