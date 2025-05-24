@@ -145,8 +145,7 @@ const StorySchema = z.object({
   videoUrls: z.array(z.string()).optional().describe("Video URLs from the post"),
   popularity: z.string().optional().describe("Popularity metrics like retweets, likes, etc."),
   content_storage_id: z.string().optional().describe("ID of the stored content in the database"),
-  content_storage_method: z.string().optional().describe("Method used to store the content"),
-  category: z.string().optional().describe("Main category of the content"),
+  content_storage_method: z.string().optional().describe("Method used to store the content"),  source: z.string().optional().describe("Source website domain"),  category: z.string().optional().describe("Main category of the content"),
   metadata: z.object({
     subCategories: z.array(z.string()).optional(),
     topics: z.array(z.string()).optional(),
@@ -174,14 +173,14 @@ interface ContentData {
   videoUrls: string[];
 }
 
-function isLikelyRecent(dateString: string): boolean {
+function isLikelyRecent(dateString: string, timeframeHours: number = 48): boolean {
   if (!dateString || dateString.trim() === '') {
     console.warn(`날짜 문자열이 비어있어 최신 게시물로 간주하지 않음`);
     return false;
   }
   
   const dateLower = dateString.toLowerCase();
-  console.log(`날짜 문자열 "${dateString}" 최신성 검사 중...`);
+  console.log(`날짜 문자열 "${dateString}" 최신성 검사 중 (${timeframeHours}시간 기준)...`);
   
   // 1. 명시적으로 최근 시간을 나타내는 키워드 확인 (더 많은 키워드 추가)
   const recentTimeKeywords = [
@@ -190,8 +189,15 @@ function isLikelyRecent(dateString: string): boolean {
   ];
   
   if (recentTimeKeywords.some(keyword => dateLower.includes(keyword))) {
-    console.log(`"${dateString}"는 최근 시간 키워드(${recentTimeKeywords.find(k => dateLower.includes(k))})를 포함하여 최신으로 간주함`);
-    return true;
+    // "X hours ago" 패턴은 아래에서 별도 처리
+    if (!dateLower.includes('days ago') && (dateLower.includes('hours ago') || dateLower.includes('hour ago') || dateLower.includes('시간 전'))) {
+        // Pass to specific hour check
+    } else if (dateLower.includes('days ago')) {
+        // Pass to specific day check
+    } else {
+        console.log(`"${dateString}"는 최근 시간 키워드(${recentTimeKeywords.find(k => dateLower.includes(k))})를 포함하여 최신으로 간주함`);
+        return true;
+    }
   }
   
   // 2. "X days ago" 패턴 매칭을 더 엄격하게 처리
@@ -201,16 +207,15 @@ function isLikelyRecent(dateString: string): boolean {
   if (daysAgoMatch) {
     const days = parseInt(daysAgoMatch[1]);
     console.log(`"${dateString}" - ${days}일 전으로 파싱됨`);
-    // 1일 이내만 최근으로 간주 (어제까지만)
-    const isRecent = days <= 1;
-    console.log(`"${dateString}"는 ${days}일 전이므로 ${isRecent ? '최신으로 간주' : '최신이 아님'}`);
+    const isRecent = days * 24 <= timeframeHours; // timeframeHours (예: 48시간) 이내
+    console.log(`"${dateString}"는 ${days}일 전이므로 ${isRecent ? '최신으로 간주' : '최신이 아님'} (${timeframeHours}시간 기준)`);
     return isRecent;
   }
   
   // 3. "yesterday" 처리
   if (dateLower.includes('yesterday')) {
-    console.log(`"${dateString}"는 'yesterday'를 포함하여 최신으로 간주함 (1일 이내)`);
-    return true;
+    console.log(`"${dateString}"는 'yesterday'를 포함하여 최신으로 간주함 (${timeframeHours}시간 기준이면 24 <= timeframeHours 확인)`);
+    return 24 <= timeframeHours; // 어제 (24시간 전)가 timeframeHours 이내인지 확인
   }
   
   // 4. "X minutes/hours ago" 패턴 매칭 (정규식 개선)
@@ -221,11 +226,11 @@ function isLikelyRecent(dateString: string): boolean {
     const amount = parseInt(timeMatch[1]);
     const unit = timeMatch[2].toLowerCase();
     
-    // 시간 단위 (24시간 내로 제한)
+    // 시간 단위 (timeframeHours 내로 제한)
     if (unit.includes('hour') || unit.includes('시간') || unit === 'h') {
-      const isRecent = amount <= 24;
-      console.log(`"${dateString}"는 ${amount}시간 전이므로 ${isRecent ? '최신으로 간주' : '최신이 아님'}`);
-      return isRecent; // 24시간까지만 허용
+      const isRecent = amount <= timeframeHours;
+      console.log(`"${dateString}"는 ${amount}시간 전이므로 ${isRecent ? '최신으로 간주' : `최신이 아님 (${timeframeHours}시간 기준)`}`);
+      return isRecent; 
     }
     
     // 분 단위는 항상 최근으로 간주
@@ -265,9 +270,9 @@ function isLikelyRecent(dateString: string): boolean {
       const timeDiff = now.getTime() - date.getTime();
       const hoursDiff = timeDiff / (1000 * 60 * 60);
       
-      // 시간 범위를 24시간으로 명확히 제한
-      const isRecent = hoursDiff <= 24;
-      console.log(`"${dateString}"는 ${hoursDiff.toFixed(1)}시간 전으로, ${isRecent ? '24시간 이내로 최신' : '24시간 초과하여 제외됨'}`);
+      // 시간 범위를 timeframeHours로 명확히 제한
+      const isRecent = hoursDiff <= timeframeHours;
+      console.log(`"${dateString}"는 ${hoursDiff.toFixed(1)}시간 전으로, ${isRecent ? `${timeframeHours}시간 이내로 최신` : `${timeframeHours}시간 초과하여 제외됨`}`);
       return isRecent;
     }
   } catch (error) {
@@ -460,11 +465,11 @@ export async function scrapeSources(
     sources = [sources[0]];
   }
   
-  // 엄격한 검증: 모든 소스의 maxItems=1, timeframeHours=24 적용
+  // 소스별 설정 적용 (getCronSources에서 전달된 값을 우선 사용)
   const validatedSources = sources.map(source => ({
     ...source,
-    maxItems: 1, // 강제로 1개로 설정
-    timeframeHours: 24 // 강제로 24시간으로 설정
+    maxItems: source.maxItems || 1, // 전달된 maxItems가 없으면 1로 설정
+    timeframeHours: source.timeframeHours || 48 // 전달된 timeframeHours가 없으면 48으로 설정 (기본값)
   }));
   
   console.log("모든 소스 파라미터 검증 후 설정:");
@@ -501,27 +506,18 @@ export async function scrapeSources(
   
   try {
     if (useDynamicCrawling) {
-      // 동적 크롤링 사용
-      console.log("Playwright를 사용한 동적 크롤링 시작...");
+      console.log(`동적 크롤링 사용 설정됨 (소스: ${validatedSources.map(s=>s.identifier).join(', ')})`);
       
-      // 동적 크롤링 실행
       const crawlResults = await dynamicCrawlWebsites(validatedSources, {
-        targetDate: yesterdayFormatted, // 어제 날짜로 설정하여 24시간 이내 기사 포함
         contentFocus: "AI, machine learning, artificial intelligence, neural network, large language model, LLM",
-        maxLinksPerSource: 1 // 강제로 1개로 제한
       });
       
-      // 결과 검증
-      console.log(`동적 크롤링 후 결과: ${crawlResults.length}개 스토리 수집됨`);
+            // 중복 로그 제거 - dynamicCrawlWebsites에서 이미 로깅됨
       
-      // 날짜 정보 로깅
-      crawlResults.forEach((story, idx) => {
-        console.log(`${idx + 1}. "${story.headline}" - 날짜: ${story.date_posted || '날짜 없음'}`);
-      });
-      
-      // 24시간 이내 게시물만 명시적으로 필터링
-      const filteredResults = crawlResults.filter(story => isLikelyRecent(story.date_posted || ''));
-      console.log(`24시간 필터링 후: ${filteredResults.length}개 스토리 남음`);
+      // timeframeHours (예: 48시간) 이내 게시물만 명시적으로 필터링
+      const currentSourceTimeframe = validatedSources[0]?.timeframeHours || 48;
+      const filteredResults = crawlResults.filter(story => isLikelyRecent(story.date_posted || '', currentSourceTimeframe));
+      console.log(`${currentSourceTimeframe}시간 필터링 후 (동적): ${filteredResults.length}개 스토리 남음`);
       
       // 각 소스별로 1개씩만 가져오도록 그룹화
       const storyBySource = new Map<string, Story>();
@@ -547,46 +543,32 @@ export async function scrapeSources(
       const llmProvider = process.env.LLM_PROVIDER as 'openai' | 'together' | 'deepseek' || 'openai';
       console.log(`LLM 프로바이더 선택: ${llmProvider}`);
       
-      console.log(`최근 24시간(${yesterdayFormatted} ~ ${todayFormatted}) 내의 AI 관련 기사를 크롤링합니다.`);
+      console.log(`최근 ${validatedSources[0]?.timeframeHours || 48}시간(${yesterdayFormatted} 이후) 내의 AI 관련 기사를 크롤링합니다.`);
       
-      const crawlResults = await crawlWebsites(validatedSources, {
+      const crawlResultsStatic = await crawlWebsites(validatedSources, {
         llmProvider,
         batchDelay: CONFIG.BATCH_DELAY,
         meta: {
-          targetDate: yesterdayFormatted, // 어제 날짜로 설정하여 24시간 이내 기사 포함
+          targetDate: yesterdayFormatted, // timeframeHours 기준으로 계산된 targetDate 전달
           contentFocus: "AI news, machine learning, LLM, large language model, neural network",
           prioritizeRecent: true
         }
       });
       
       // 결과 검증
-      console.log(`정적 크롤링 후 결과: ${crawlResults.length}개 스토리 수집됨`);
+      console.log(`정적 크롤링 후 결과: ${crawlResultsStatic.length}개 스토리 수집됨`);
       
       // 날짜 정보 로깅
-      crawlResults.forEach((story, idx) => {
+      crawlResultsStatic.forEach((story, idx) => {
         console.log(`${idx + 1}. "${story.headline}" - 날짜: ${story.date_posted || '날짜 없음'}`);
       });
       
-      // 24시간 이내 게시물만 명시적으로 필터링
-      const filteredResults = crawlResults.filter(story => isLikelyRecent(story.date_posted || ''));
-      console.log(`24시간 필터링 후: ${filteredResults.length}개 스토리 남음`);
-      
-      // 각 소스별로 1개씩만 가져오도록 그룹화
-      const storyBySource = new Map<string, Story>();
-      for (const story of filteredResults) {
-        // 각 소스별 가장 최신 게시물 확인
-        const source = story.link.match(/^https?:\/\/([^\/]+)/i)?.[1] || story.link;
-        if (!storyBySource.has(source) || isNewer(story.date_posted, storyBySource.get(source)?.date_posted)) {
-          storyBySource.set(source, story);
-        }
-      }
+      // 정적 크롤링 결과에 대해서는 isLikelyRecent 필터링 유지 (필요시)
+      const filteredResultsStatic = crawlResultsStatic.filter(story => isLikelyRecent(story.date_posted || '', validatedSources[0]?.timeframeHours || 48));
+      console.log(`${validatedSources[0]?.timeframeHours || 48}시간 필터링 후 (정적): ${filteredResultsStatic.length}개 스토리 남음`);
       
       // 최종 스토리 모음
-      const finalResults = Array.from(storyBySource.values());
-      console.log(`소스별 중복 제거 후 최종: ${finalResults.length}개 스토리`);
-      
-      // 코드 재사용을 방지하고 단순화하기 위해 결과 바로 처리
-      allStories = finalResults;
+      allStories = filteredResultsStatic;
     }
     
     // 주요 로그 정보 출력

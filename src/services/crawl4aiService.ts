@@ -3,6 +3,11 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { z } from 'zod';
+// import { PlaywrightCrawler, launchPlaywright, sleep } from 'crawl4ai';
+// import { Story } from '../types';
+// import { cleanUpUrl, isValidUrl } from '../utils/urlUtils';
+import { ApiCache, withCache } from '../utils/apiCache';
+import { parse, parseISO, differenceInHours } from 'date-fns';
 
 // python-shell 관련 타입 정의
 interface PythonShellOptions {
@@ -75,8 +80,8 @@ export async function crawlSingleWebsite(
     const llmProvider = options.llmProvider || 'openai';
     
     // 최대 아이템 수와 시간 제한 설정
-    const maxItems = options.maxItems || 3; // 기본값 3개
-    const timeframeHours = options.timeframeHours || 24; // 기본값 24시간
+    const maxItems = options.maxItems || 2; // 기본값 3개
+    const timeframeHours = options.timeframeHours || 48; // 기본값 48시간
 
     // Python 스크립트 경로
     const scriptPath = path.join(__dirname, '../scripts/crawl.py');
@@ -159,77 +164,86 @@ export async function crawlSingleWebsite(
           console.log(`${idx + 1}. "${story.headline}" - 날짜: ${story.date_posted || '날짜 없음'}`);
         });
         
-        // 24시간 이내 게시물만 필터링 - 매우 엄격하게 적용
+        // 48시간 이내 게시물만 필터링 - 매우 엄격하게 적용
         allStories = allStories.filter(story => {
           try {
             // 날짜 문자열을 여러 형식으로 시도
             let storyDate: Date | null = null;
+            const timeframeMs = timeframeHours * 60 * 60 * 1000; // 밀리초 단위로 변환
+            const now = new Date(); 
             
             if (story.date_posted) {
               // "X days ago" 패턴을 명시적으로 확인하고 거부
               const daysAgoMatch = story.date_posted.match(/(\d+)\s*days?\s*ago/i);
               if (daysAgoMatch) {
                 const days = parseInt(daysAgoMatch[1]);
-                console.log(`"${story.headline}" - 날짜 "${story.date_posted}"는 ${days}일 전으로, 24시간(1일) 초과하여 제외됨`);
-                // 1일(24시간) 초과하는 "days ago" 항목은 무조건 제외
-                return days <= 1;
+                console.log(`"${story.headline}" - 날짜 "${story.date_posted}"는 ${days}일 전으로, ${timeframeHours}시간(약 ${(timeframeHours / 24).toFixed(1)}일) 기준 검사`);
+                return days * 24 <= timeframeHours; // timeframeHours (예: 48시간) 이내
               }
               
               // "a day ago", "1 day ago" 패턴 특별 처리
-              if (/^(a|1)\s+day\s+ago$/i.test(story.date_posted.trim())) {
-                console.log(`"${story.headline}" - 날짜 "${story.date_posted}"는 1일 전이지만, 24시간 이내로 간주하여 포함함`);
+              if (/^(a|1)\s+day\s+ago$/i.test(story.date_posted)) {
+                console.log(`"${story.headline}" - 날짜 "${story.date_posted}"는 어제 게시물로 간주 (${timeframeHours}시간 기준)`);
+                return 24 <= timeframeHours; // 어제 (24시간 전)가 timeframeHours 이내인지 확인
+              }
+
+              // "X hours ago" 패턴 처리
+              const hoursAgoMatch = story.date_posted.match(/(\d+)\s*(hour|hr)s?\s*ago/i);
+              if (hoursAgoMatch) {
+                const hours = parseInt(hoursAgoMatch[1]);
+                console.log(`"${story.headline}" - 날짜 "${story.date_posted}"는 ${hours}시간 전 게시물 (${timeframeHours}시간 기준)`);
+                return hours <= timeframeHours;
+              }
+              
+              // "X minutes ago", "just now" 등은 항상 최신으로 간주 (timeframeHours 무관)
+              if (/(\d+\s*(minute|min)s?\s*ago|just\s*now|바로\s*전|방금|분\s*전)/i.test(story.date_posted)) {
+                console.log(`"${story.headline}" - 날짜 "${story.date_posted}"는 매우 최신 게시물로 간주`);
                 return true;
               }
               
-              // 상대적 날짜 표현 처리 (e.g. "4 hours ago", "30 minutes ago")
-              const relativeMatch = story.date_posted.match(/(\d+)\s+(hour|hours|minute|minutes|min|mins)\s+ago/i);
-              if (relativeMatch) {
-                const amount = parseInt(relativeMatch[1]);
-                const unit = relativeMatch[2].toLowerCase();
-                
-                storyDate = new Date(now);
-                if (unit.includes('hour')) {
-                  storyDate.setHours(storyDate.getHours() - amount);
-                } else if (unit.includes('min')) {
-                  storyDate.setMinutes(storyDate.getMinutes() - amount);
-                }
-                
-                const ageMs = now.getTime() - storyDate.getTime();
-                const ageHours = ageMs / (60 * 60 * 1000);
-                
-                console.log(`"${story.headline}" - 날짜 "${story.date_posted}"는 ${ageHours.toFixed(1)}시간 전으로 파싱됨`);
-                // 설정된 timeframeHours 내에 있는지 확인
-                return ageMs <= timeframeMs;
-              } 
-              // ISO 날짜 또는 일반 날짜 형식 처리
-              else {
-                storyDate = new Date(story.date_posted);
-                
-                // 날짜가 유효하면 시간 차이 계산
-                if (!isNaN(storyDate.getTime())) {
-                  const ageMs = now.getTime() - storyDate.getTime();
-                  const ageHours = ageMs / (60 * 60 * 1000);
-                  
-                  console.log(`"${story.headline}" - 날짜 "${story.date_posted}"는 ${ageHours.toFixed(1)}시간 전으로 파싱됨`);
-                  return ageMs <= timeframeMs;
-                } else {
-                  // 날짜 파싱 실패 시 로그 추가
-                  console.warn(`"${story.headline}" - 날짜 "${story.date_posted}" 파싱 실패, 형식을 확인할 수 없음`);
-                  
-                  // 날짜 파싱 실패 시 보수적 접근: 기본적으로 제외
-                  return false;
-                }
+              // 절대 날짜/시간 문자열 파싱 시도 (다양한 형식 지원)
+              const dateFormats = [
+                "yyyy-MM-dd'T'HH:mm:ss.SSSXXX", // ISO8601 확장
+                "yyyy-MM-dd'T'HH:mm:ssXXX",    // ISO8601 기본
+                "yyyy-MM-dd HH:mm:ss",
+                "yyyy-MM-dd HH:mm",
+                "yyyy/MM/dd HH:mm:ss",
+                "MM/dd/yyyy HH:mm:ss",
+                "dd/MM/yyyy HH:mm:ss",
+                "yyyy.MM.dd HH:mm:ss",
+                "MMM d, yyyy, h:mm:ss a", // 예: Jan 1, 2023, 3:00:00 PM
+                "MMM d, yyyy",            // 예: Jan 1, 2023
+                "yyyy년 MM월 dd일 HH시 mm분",
+                "yy.MM.dd HH:mm"
+              ];
+
+              for (const format of dateFormats) {
+                try {
+                  storyDate = parse(story.date_posted, format, new Date());
+                  if (storyDate && !isNaN(storyDate.getTime())) break; // 성공하면 루프 종료
+                } catch (e) { /* 다음 형식 시도 */ }
+              }
+              
+              // parseISO도 시도 (ISO 형식 문자열 처리)
+              if (!storyDate || isNaN(storyDate.getTime())) {
+                try {
+                  storyDate = parseISO(story.date_posted);
+                } catch (e) { /* 실패 */ }
               }
             }
-            
-            // date_posted가 없는 경우 로깅
-            console.warn(`"${story.headline}" - 날짜 정보 없음, 최신성 확인 불가`);
-            // 날짜 정보가 없는 경우 기본적으로 제외
-            return false;
+
+            if (storyDate && !isNaN(storyDate.getTime())) {
+              const hoursDiff = differenceInHours(now, storyDate);
+              const isRecent = hoursDiff >= 0 && hoursDiff <= timeframeHours;
+              console.log(`"${story.headline}" - 날짜 "${story.date_posted}" (${storyDate.toISOString()})는 ${hoursDiff.toFixed(1)}시간 전. ${timeframeHours}시간 이내 여부: ${isRecent}`);
+              return isRecent;
+            } else {
+              console.warn(`"${story.headline}" - 날짜 "${story.date_posted || '없음'}"을 파싱할 수 없거나 유효하지 않아 ${timeframeHours}시간 필터에서 제외.`);
+              return false; // 날짜 파싱 불가 시 제외 (보수적 접근)
+            }
           } catch (error) {
-            console.error(`"${story.headline}" - 날짜 필터링 오류: ${error}`);
-            // 오류 발생 시 기본적으로 제외
-            return false;
+            console.error(`날짜 필터링 중 오류 발생 (스토리: "${story.headline}", 날짜: "${story.date_posted}"):`, error);
+            return false; // 오류 발생 시 안전하게 제외
           }
         });
         
@@ -430,7 +444,7 @@ export async function crawlWebsites(
     for (let i = 0; i < sources.length; i++) {
       const source = sources[i].identifier;
       const maxItems = sources[i].maxItems || 1; // 기본값 1로 설정
-      const timeframeHours = sources[i].timeframeHours || 24; // 기본값 24시간으로 설정
+      const timeframeHours = sources[i].timeframeHours || 36; // 기본값 36시간으로 설정
       
       console.log(`소스 처리 중 (${i+1}/${sources.length}): ${source}`);
       console.log(`설정: 최대 ${maxItems}개 항목, ${timeframeHours}시간 이내 필터링 적용`);
@@ -833,138 +847,99 @@ export async function classifyContentHierarchically(
  * @returns 크롤링 결과
  */
 export async function dynamicCrawlWebsites(
-  sources: { identifier: string }[],
+  sources: { identifier: string; maxItems?: number; timeframeHours?: number }[],
   options: {
     llmProvider?: 'openai' | 'together' | 'deepseek';
     outputPath?: string;
     targetDate?: string;
     contentFocus?: string;
-    maxLinksPerSource?: number;
   } = {}
 ): Promise<Story[]> {
   try {
-    // 임시 디렉토리에 결과 파일 저장
+    // Python 스크립트가 기대하는 형태로 sources 배열 가공
+    const sourcesConfigForPython = sources.map(s => ({
+      identifier: s.identifier, // Python에서 'identifier' 또는 'url'로 조회
+      maxItems: s.maxItems || 1,   // Python에서 'maxItems' 또는 'max_items'로 조회
+    }));
+    const sourcesConfigJson = JSON.stringify(sourcesConfigForPython);
+
+    const scriptPath = path.join(__dirname, '../scripts/dynamic_crawl.py');
     const outputPath = options.outputPath || path.join(os.tmpdir(), `dynamic_crawl_result_${Date.now()}.json`);
     const llmProvider = options.llmProvider || 'openai';
-    const maxLinksPerSource = options.maxLinksPerSource || 5;
+    const targetDate = options.targetDate;
+    const contentFocus = options.contentFocus;
+    
+    // 전체 크롤링 작업에 대한 timeframeHours 설정 (첫 번째 소스 또는 기본값 사용)
+    const overallTimeframeHours = sources[0]?.timeframeHours || 48;
 
-    // 소스 URL만 추출
-    const sourceUrls = sources.map(source => source.identifier);
-    const sourcesJson = JSON.stringify(sourceUrls);
-    
-    // Python 스크립트 경로
-    const scriptPath = path.join(__dirname, '../scripts/dynamic_crawl.py');
-    
-    // 스크립트 존재 확인
     if (!fs.existsSync(scriptPath)) {
-      console.error(`동적 크롤링 스크립트를 찾을 수 없습니다: ${scriptPath}`);
-      throw new Error(`동적 크롤링 스크립트가 존재하지 않습니다: ${scriptPath}`);
+      console.error(`Dynamic crawling 스크립트를 찾을 수 없습니다: ${scriptPath}`);
+      throw new Error(`Dynamic crawling 스크립트가 존재하지 않습니다: ${scriptPath}`);
     }
 
-    // 명령줄 인자 구성
-    const args = [
-      '--sources', sourcesJson,
+    const pythonArgs: string[] = [
+      '--sources_config', sourcesConfigJson,
       '--output', outputPath,
-      '--llm_provider', llmProvider
+      '--llm_provider', llmProvider,
+      '--timeframe_hours', overallTimeframeHours.toString(), // timeframe_hours 인자 전달
     ];
 
-    // 선택적 인자 추가
-    if (options.targetDate) {
-      args.push('--target_date', options.targetDate);
+    if (targetDate) {
+      pythonArgs.push('--target_date', targetDate);
     }
-    
-    if (options.contentFocus) {
-      args.push('--content_focus', options.contentFocus);
+    if (contentFocus) {
+      pythonArgs.push('--content_focus', contentFocus);
     }
 
-    // Python 스크립트 옵션
     const pythonOptions: PythonShellOptions = {
       mode: 'text',
-      pythonPath: 'python',
-      pythonOptions: ['-u'], // 버퍼링 없이 출력
-      args: args
+      pythonPath: 'python', // 시스템 PATH에 설정된 python 사용
+      pythonOptions: ['-u'], // unbuffered stdout/stderr
+      args: pythonArgs,
     };
 
-    // Playwright 설치 필요 시
-    try {
-      // Playwright가 이미 설치되어 있는지 확인
-      const checkScript = `
-try:
-    from playwright.async_api import async_playwright
-    print("installed")
-except ImportError:
-    print("not_installed")
-`;
-      const tempScriptPath = createTempPythonScript(checkScript);
-      const checkResult = await PythonShell.run(tempScriptPath, { 
-        mode: 'text',
-        pythonPath: 'python'
-      });
-      
-      // 임시 파일 삭제
-      try { fs.unlinkSync(tempScriptPath); } catch (e) { /* 무시 */ }
-      
-      // Playwright가 설치되어 있지 않으면 설치
-      if (checkResult[0] !== "installed") {
-        console.log("Playwright 설치 중...");
-        // 별도의 스크립트 생성
-        const installScript = `
-import subprocess
-import sys
+    console.log(`Executing Dynamic Python script: ${scriptPath}`);
+    console.log(`Python arguments:`);
+    // 로그를 더 읽기 쉽게 출력 (한 줄로)
+    console.log(JSON.stringify(pythonOptions.args, null, 2));
+    
+    console.log(`Dynamic crawl4ai 크롤링 시작 (Timeframe: ${overallTimeframeHours}h)...`);
+    const resultsFromScript = await PythonShell.run(scriptPath, pythonOptions);
 
-# pip로 playwright 설치
-subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
-# playwright로 chromium 설치
-subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
-print("playwright_installed")
-`;
-        const installScriptPath = createTempPythonScript(installScript);
-        await PythonShell.run(installScriptPath, {
-          mode: 'text',
-          pythonPath: 'python'
-        });
-        
-        // 임시 파일 삭제
-        try { fs.unlinkSync(installScriptPath); } catch (e) { /* 무시 */ }
+    if (resultsFromScript && resultsFromScript.length > 0) {
+      console.log(`Dynamic Python script output (first 5 lines):`);
+      resultsFromScript.slice(0, 5).forEach((line, i) => {
+        console.log(`  ${i+1}. ${line.substring(0, 150)}${line.length > 150 ? '...' : ''}`);
+      });
+      if (resultsFromScript.length > 5) {
+        console.log(`  ... and ${resultsFromScript.length - 5} more lines`);
       }
-    } catch (e: any) {
-      console.error("Playwright 설치 오류:", e);
-      throw new Error("Playwright 설치 실패: " + e.message);
     }
 
-    // 스크립트 실행
-    console.log(`동적 크롤링 시작 (${sourceUrls.length}개 소스)...`);
-    const results = await PythonShell.run(scriptPath, pythonOptions);
-    console.log('동적 크롤링 프로세스 완료');
-    
-    // 결과 파일 읽기
     if (fs.existsSync(outputPath)) {
       const rawData = fs.readFileSync(outputPath, { encoding: 'utf-8' });
-      const results: CrawlResult[] = JSON.parse(rawData);
+      const parsedResults: CrawlResult[] = JSON.parse(rawData); 
       
-      // 스토리 추출
-      const allStories: Story[] = [];
-      for (const result of results) {
+      let allStories: Story[] = [];
+      for (const result of parsedResults) {
         if (result.stories && Array.isArray(result.stories)) {
           allStories.push(...result.stories);
         }
       }
-      
-      console.log(`동적 크롤링 완료: ${allStories.length}개의 스토리를 찾았습니다.`);
-      
-      // 임시 파일 삭제
-      try {
-        fs.unlinkSync(outputPath);
-      } catch (e) {
-        console.warn(`임시 파일 삭제 실패: ${outputPath}`);
-      }
-      
+      console.log(`🎉 동적 크롤링 완료: ${allStories.length}개 스토리 수집`); 
+                 // 간소화된 결과 로깅 (소스 정보 포함)      if (allStories.length > 0) {        console.log(`📋 수집된 스토리 목록:`);        allStories.forEach((story, idx) => {          const source = (story as any).source || 'Unknown';          console.log(`   ${idx + 1}. "${story.headline}" (출처: ${source})`);        });      } else {        console.log(`⚠️ 수집된 스토리가 없습니다.`);      }
+
       return allStories;
     } else {
-      throw new Error(`동적 크롤링 결과 파일을 찾을 수 없습니다: ${outputPath}`);
+      console.error(`Dynamic crawl result file not found: ${outputPath}`);
+      return [];
     }
-  } catch (error) {
-    console.error('동적 크롤링 서비스 오류:', error);
+
+  } catch (error: any) {
+    console.error('Error during dynamic website crawling:', error);
+    if (error.traceback) {
+      console.error('Python Traceback:', error.traceback);
+    }
     return [];
   }
 } 

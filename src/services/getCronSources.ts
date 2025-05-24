@@ -12,34 +12,28 @@ export async function getCronSources(): Promise<{ identifier: string; maxItems?:
 
     // 각 소스별로 최신 기사 1개만 가져오기 위한 설정
     // maxItems: 각 소스에서 가져올 최대 아이템 수 (1개로 제한)
-    // timeframeHours: 현재 시간으로부터 몇 시간 내의 컨텐츠만 가져올지 설정 (24시간)
+    // timeframeHours: 현재 시간으로부터 몇 시간 내의 컨텐츠만 가져올지 설정 (48시간)
 
     const sources: { identifier: string; maxItems: number; timeframeHours: number }[] = [
-      // 가장 크롤링하기 쉬운 블로그 하나만 선택
-      { identifier: "https://deepmind.google/discover/blog/", maxItems: 1, timeframeHours: 24 },
-      { identifier: "https://huggingface.co/blog/community", maxItems: 1, timeframeHours: 24 },
-      // { identifier: "https://ai.meta.com/blog/", maxItems: 1, timeframeHours: 24 },
-      // { identifier: "https://openai.com/news/", maxItems: 1, timeframeHours: 24 },
-      // { identifier: "https://www.anthropic.com/news", maxItems: 1, timeframeHours: 24 },
 
       // 뉴스
-      { identifier: "https://www.reuters.com/technology/artificial-intelligence/", maxItems: 1, timeframeHours: 24 },
+      { identifier: "https://deepmind.google/discover/blog/", maxItems: 1, timeframeHours: 48 },
+      { identifier: "https://www.mindstream.news/archive", maxItems: 1, timeframeHours: 48 },
+      { identifier: "https://aichief.com/news/", maxItems: 2, timeframeHours: 48 },
+      { identifier: "https://news.ycombinator.com/", maxItems: 3, timeframeHours: 48 },
 
-      // 블로그
-      { identifier: "https://news.ycombinator.com/", maxItems: 1, timeframeHours: 24 },
-      { identifier: "https://simonwillison.net/", maxItems: 1, timeframeHours: 24 },
     ];
 
     // 소스 설정값 확인 및 강화
     const verifiedSources = sources.map(source => {
       return {
         ...source,
-        maxItems: 1, // 항상 1개로 강제 설정
-        timeframeHours: 24 // 항상 24시간으로 강제 설정
+        maxItems: source.maxItems || 2, // 전달된 maxItems가 없으면 1로 설정
+        timeframeHours: source.timeframeHours || 48 // 전달된 timeframeHours가 없으면 48으로 설정 (기본값)
       };
     });
 
-    console.log(`최근 24시간 내 각 소스별 최신 컨텐츠 1개씩만 가져오도록 설정됨`);
+    console.log(`최근 48시간 내 각 소스별 최신 컨텐츠 1개씩만 가져오도록 설정됨`);
     
     // 최종 소스 목록과 설정 로깅
     verifiedSources.forEach(source => {

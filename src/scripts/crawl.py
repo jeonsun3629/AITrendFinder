@@ -70,7 +70,7 @@ def setup_argparse() -> argparse.Namespace:
     parser.add_argument(
         "--timeframe_hours", 
         type=int, 
-        default=24,
+        default=48,
         help="현재 시간으로부터 몇 시간 내의 컨텐츠만 가져올지 설정"
     )
     return parser.parse_args()
@@ -111,7 +111,7 @@ def setup_crawl4ai(llm_provider: str = "openai") -> AsyncWebCrawler:
         llm_config=llm_config
     )
 
-async def crawl_source(crawler: AsyncWebCrawler, source: str, max_items: int = 1, timeframe_hours: int = 24) -> Dict[str, Any]:
+async def crawl_source(crawler: AsyncWebCrawler, source: str, max_items: int = 1, timeframe_hours: int = 48) -> Dict[str, Any]:
     """단일 소스 크롤링"""
     print(f"크롤링 시작: {source} (최대 {max_items}개 항목, {timeframe_hours}시간 이내)")
     
@@ -205,10 +205,10 @@ async def crawl_source(crawler: AsyncWebCrawler, source: str, max_items: int = 1
                 if days_ago_match:
                     days = int(days_ago_match.group(1))
                     print(f"날짜 '{date_str}'는 {days}일 전으로 파싱됨")
-                    # 1일 초과는 제외 (24시간 기준)
-                    is_recent = days <= 1
+                    # timeframe_hours (예: 48시간) 이내인지 확인 (days * 24 <= timeframe_hours)
+                    is_recent = days * 24 <= timeframe_hours 
                     if not is_recent:
-                        print(f"24시간 초과 게시물 필터링: {story['headline']} ({date_str})")
+                        print(f"{timeframe_hours}시간 초과 게시물 필터링: {story['headline']} ({date_str})")
                         continue
                 
                 # "X hours ago", "X minutes ago" 패턴 처리
